@@ -1,17 +1,5 @@
 package io.crnk.gen.typescript.internal;
 
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.Callable;
-
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -27,9 +15,23 @@ import io.crnk.gen.typescript.transform.TSMetaTransformationContext;
 import io.crnk.gen.typescript.transform.TSMetaTransformationOptions;
 import io.crnk.gen.typescript.writer.TSWriter;
 import io.crnk.meta.MetaLookup;
+import io.crnk.meta.internal.resource.ResourceMetaParitition;
 import io.crnk.meta.model.MetaElement;
+import io.crnk.meta.provider.resource.ResourceMetaProvider;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.util.*;
+import java.util.concurrent.Callable;
 
 public class TSGenerator {
+
+	private static final Logger LOGGER = LoggerFactory.getLogger(TSGenerator.class);
+
+	private ResourceMetaParitition resourveMetaPartition;
 
 	private File outputDir;
 
@@ -49,6 +51,8 @@ public class TSGenerator {
 		this.outputDir = outputDir;
 		this.lookup = lookup;
 		this.config = config;
+
+		this.resourveMetaPartition = lookup.getPartition(ResourceMetaParitition.class);
 
 		transformations = new ArrayList<>();
 		for (final String className : config.getMetaTransformationClassNames()) {
@@ -178,9 +182,15 @@ public class TSGenerator {
 
 	public void transformMetaToTypescript() {
 		Collection<MetaElement> elements = lookup.getMetaById().values();
+		LOGGER.debug("transforming {} elements", elements.size());
 		for (MetaElement element : elements) {
-			if (isRoot(element) && isGenerated(element)) {
+			boolean isRoot = isRoot(element);
+			boolean isGenerated = isGenerated(element);
+			if (isRoot && isGenerated) {
+				LOGGER.debug("transforming {}", element.getId());
 				transform(element, TSMetaTransformationOptions.EMPTY);
+			} else {
+				LOGGER.debug("ignoring {}, root={}, generated={}", element.getId(), isRoot, isGenerated);
 			}
 		}
 
@@ -191,8 +201,7 @@ public class TSGenerator {
 					transformation.postTransform(transformedElement, createMetaTransformationContext());
 				}
 			}
-		}
-		finally {
+		} finally {
 			postProcessing = false;
 		}
 	}
@@ -225,7 +234,7 @@ public class TSGenerator {
 		if (elementSourceMap.containsKey(element)) {
 			return elementSourceMap.get(element);
 		}
-		if(postProcessing){
+		if (postProcessing) {
 			throw new IllegalStateException("cannot add further element while post processing: " + element.getId());
 		}
 		for (TSMetaTransformation transformation : transformations) {
@@ -260,6 +269,9 @@ public class TSGenerator {
 		@Override
 		public String getDirectory(MetaElement meta) {
 			String idPath = meta.getId().substring(0, meta.getId().lastIndexOf('.'));
+			if (idPath.startsWith(ResourceMetaProvider.DEFAULT_ID_PREFIX)) {
+				return idPath.substring(Math.min(ResourceMetaProvider.DEFAULT_ID_PREFIX.length() + 1, idPath.length()));
+			}
 			String prefix = idPath;
 			while (true) {
 				String npmName = config.getNpm().getPackageMapping().get(prefix);
@@ -269,7 +281,7 @@ public class TSGenerator {
 				int sep = prefix.lastIndexOf('.');
 				if (sep == -1) {
 					throw new IllegalStateException("failed to determine NPM package name for " + meta.getId()
-							+ ", configure plugin accordingly with typescriptGen.npmPackageMapping");
+							+ ", configure plugin accordingly with typescriptGen.npm.packageMapping for package '" + idPath + "' or above");
 				}
 				prefix = prefix.substring(0, sep);
 			}
@@ -278,6 +290,9 @@ public class TSGenerator {
 		@Override
 		public String getNpmPackage(MetaElement meta) {
 			String idPath = meta.getId().substring(0, meta.getId().lastIndexOf('.'));
+			if (idPath.startsWith(ResourceMetaProvider.DEFAULT_ID_PREFIX)) {
+				return config.getNpm().getPackageName();
+			}
 			String prefix = idPath;
 			while (true) {
 				String npmName = config.getNpm().getPackageMapping().get(prefix);
@@ -286,9 +301,9 @@ public class TSGenerator {
 				}
 				int sep = prefix.lastIndexOf('.');
 				if (sep == -1) {
-					throw new IllegalStateException("failed to determine NPM package name for " + meta.getId() + " of type "
+					throw new IllegalStateException("failed to determine NPM package name for id " + meta.getId() + " of type "
 							+ meta.getClass().getSimpleName()
-							+ ", configure plugin accordingly with typescriptGen.npmPackageMapping");
+							+ ", configure plugin accordingly with typescriptGen.npm.packageMapping for package '" + idPath + "' or above");
 				}
 				prefix = prefix.substring(0, sep);
 			}
@@ -313,7 +328,7 @@ public class TSGenerator {
 
 		@Override
 		public MetaElement getMeta(Class<?> implClass) {
-			return lookup.getMeta(implClass);
+			return resourveMetaPartition.getMeta(implClass);
 		}
 
 		@Override

@@ -332,6 +332,8 @@ JSON API (meta) repository and data structures matching the standard. Most likel
 any future standard implementation will built up on the information from the
 `MetaModule`.
 
+### Setup
+
 A setup can look as follows:
 
 [source]
@@ -339,6 +341,12 @@ A setup can look as follows:
 		MetaModule metaModule = MetaModule.create();
 		metaModule.addMetaProvider(new ResourceMetaProvider());
 ----
+
+`ResourceMetaProvider` exposes all JSON API resources and repositories as meta data. You may add further provides to
+expose more meta data, such as the `JpaMetaProvider`.
+
+
+### Examples
 
 To learn more about the set of available resources, have a look at the `MetaElement` class and all its subclasses. Some of the
 most important classes are:
@@ -367,7 +375,7 @@ A `MetaResource` looks like:
 [source]
 ----
 {
-    "id" : "io.crnk.example.springboot.domain.model.Project",
+    "id" : "resources.project",
     "type" : "meta/resource",
     "attributes" : {
       "name" : "Project",
@@ -415,7 +423,7 @@ A `MetaAttribute` looks like:
 [source]
 ----
 {
-    "id" : "io.crnk.example.springboot.domain.model.Project.name",
+    "id" : "resources.project.name",
     "type" : "meta/resourceField",
     "attributes" : {
       "filterable" : true,
@@ -451,8 +459,41 @@ A `MetaAttribute` looks like:
   }
 ----
 
+### Identifiers for Meta Elements
+
+Of importance is the assignment of IDs to meta elements. For resources the resource type is used to compute the meta
+id and a `resources` prefix is added. In the example above, person gets a `resources.person` meta id.
+Related objects (DTOs, links/meta info) located in the same or a subpackage of a resource gets the same meta id prefix.
+A `ProjectData` sitting in a `dto` subpackage would get a `resources.dto.projectdata` meta id.
+
+The meta ids are used, for example, by the Typescript generator to determine the file structure and dependencies of generated
+source files.
+
+Applications are enabled to adapt the id generator process with:
+
+`new ResourceMetaProvider(idPrefix)`
+
+and
+
+`ResourceMetaProvider.putIdMapping(String packageName, String idPrefix)`
+
+to override the default `resources` prefix and assign a specific prefix for a package.
+
+
+### Extending the Meta Module
+
+There is a `MetaModuleExtension` extension that allows other Crnk modules contribute `MetaProvider`
+implementation. This allows to:
+
+- add `MetaFilter` implementations to intercept and modify meta elements upon initialization and request.
+- add `MetaPartition` implementations to introduce new, isolated areas in the meta model, like a JPA
+  meta model next to the JSON API one (like for documentation purposes).
+
+For more detailed information have a look at the current `ResourceMetaProvider`.
+
 
 anchor:home_module[]
+
 
 ## Home Module
 
@@ -572,3 +613,143 @@ This module is currently in incubation. Please provide feedback.
 An example from the Spring Boot example application looks like:
 
 image:images/crnk_ui.png[]
+
+
+
+## Activiti Module
+
+NOTE: This module is in new and in incubation. Feedback and improvements welcomed.
+
+There is an `ActivitiModule` for the https://www.activiti.org[Activiti] workflow engine that offers an alternative REST API.
+The motivation of `ActivitiModule` is to:
+
+- have a JSON API compliant REST API to benefit from the resource-oriented architecture, linking, sorting, filtering, paging,
+  and client-side tooling of JSON API.
+- have a type-safe, non-generic REST API that is tailored towards the use cases at hand. This means that for each process
+  and task definition, there is a dedicated repository and resource type for it. The resource is comprised of
+  both the static fields provided by Activiti (like `name`, `startTime` and `priority`) and the dynamic fields
+  stored by the application as process/task/form variables. Mapping to static resp. dynamic fields is done
+  automatically by the `ActivitiModule` and hidden from consumers. The repository implementations ensure a proper isolation of different types. And
+  the application is enabled, for example, to introduce custom security policies for each resource with
+  the `SecurityModule` or a `ResourceFilter`.
+
+This setup differs substantially from the API provided by Activiti that is implemented
+in generic fashion.
+
+### Setup
+
+The `ActivitiModule` comes within a small example application within the `src/main/test` directory that showcases its use.
+It sets up an approval flow where changes to the `Schedule` resource must be approved by a user.
+
+The `ActivitiModule` implements four resource base classes that match the equivalent Activiti classes:
+
+- `ExecutionResource`
+- `FormResource`
+- `ProcessInstanceResource`
+- `TaskResource`
+
+To setup a JSON API repository for a process or task, the corresponding resource class can be subclassed and extended with
+the application specific fields. For example:
+
+[source]
+.ApprovalProcessInstance.java
+----
+include::../../../../crnk-activiti/src/test/java/io/crnk/activiti/example/approval/ApprovalProcessInstance.java[tag=docs1]
+	...
+include::../../../../crnk-activiti/src/test/java/io/crnk/activiti/example/approval/ApprovalProcessInstance.java[tag=docs2]
+----
+
+and
+
+[source]
+.ScheduleApprovalProcessInstance.java
+----
+include::../../../../crnk-activiti/src/test/java/io/crnk/activiti/example/model/ScheduleApprovalProcessInstance.java[tag=docs1]
+	...
+include::../../../../crnk-activiti/src/test/java/io/crnk/activiti/example/model/ScheduleApprovalProcessInstance.java[tag=docs2]
+----
+
+The example application makes use of an intermediate `ApprovalProcessInstance` base class to potentially share the approval
+logic among multiple entities in the future (if it would be real-world use case). `ScheduleApprovalProcessInstance` has
+the static fields of Activiti and a number of custom, dynamic fields like `resourceType`, `resourceId` and `newValues`.
+The dynamic fields will be mapped to to process, task resp. form variables.
+
+Notice the relation to `ApproveTask`, which is a task counter part extending from `TaskResource`. If a process has multiple
+tasks, you may introduce multiple such relationships.
+
+Finally, the setup of the `ActiviModule` looks like:
+
+[source]
+.ApprovalTestApplication.java
+----
+include::../../../../crnk-activiti/src/test/java/io/crnk/activiti/example/ApprovalTestApplication.java[tag=activitiModule]
+----
+
+- `ActivitiModuleConfig` allows to register processes and tasks that then will be exposed as repositories.
+- `ScheduleApprovalProcessInstance`, `ApproveTask` and the `approveTask` relationship are registered.
+- `ApproveTask` is user task that is handled by submitting an `ApproveForm`.
+- `filterByProcessDefinitionKey` and `filterByTaskDefinitionKey` ensure that the two repositories
+  are isolated from other repositories for `GET`, `POST`, `PATCH` and `DELETE` operations.
+
+One could imagine to make this configuration also available through an annotation-based API in the future as it is
+closely related to the resource classes and fields.
+
+
+### Example application
+
+The example application goes a few steps further in the setup. The patterns of those steps might be of
+interest of consumers of the `ActivitiModule` as well.
+
+The workflow looks as follows:
+
+[source]
+.approval.bpmn20.xml
+----
+include::../../../../crnk-activiti/src/test/resources/approval.bpmn20.xml[]
+----
+
+There is a:
+
+- `approveScheduleTask` task requires a form submission by a user.
+- `approvalExclusiveGateway` checks whether the change was accepted.
+- `scheduleChangeApproved` invokes `${approvalManager.approved(execution)}` whereas `approvalManager` is a Java object
+  taking care of the approval handling and registered to `activiti.cfg.xml`.
+- `approvalManager.approved(...)` reconstructs the original request and forwards it to Crnk again to save the approved
+  changes. This means the regular `ScheduleRepository` implementation will be called in the same fashion as for
+   a typical request. Real world use cases may also need to save and reconstruct the security context.
+
+For the approval-related functionality a second module is registered:
+
+[source]
+.ApprovalTestApplication.java
+----
+include::../../../../crnk-activiti/src/test/java/io/crnk/activiti/example/ApprovalTestApplication.java[tag=approvalModule]
+----
+
+- `ApprovalRepositoryDecorator` hooks into the request processing of the Crnk engine and intercepts
+ all `PATCH` and `POST` requests for the `Schedule` resource. The decorator then may chooses to
+ abort the request and start an approval flow instead with the help of `ApprovalManager`.
+- `ApprovalRelationshipRepository` introduces an additional relationship between the actual resources
+  and approval resources. It can be used, for example, by user interfaces to show the current status
+  of an open approval workflow. `ApprovalRelationshipRepository.getResourceFields` declares
+  the relationship field, meaning that the original application resource does not have to declare the
+  relationship. This may or may not be useful depending on how much control there is over the original resource
+  (for example there is no control over JPA entities).
+
+
+The chosen setup leads to an approval system that is *fully transparent* to the actual repository implementations
+and can be added to any kind of repository.
+
+`ApprovalIntTest` showcases the example workflow by doing a change,
+starting the approval process, submitting a form and then verifying the changes have been saved.
+
+
+### Limitations
+
+- Currently the main entities of Activiti have been exposed. History and configuration-related repositories
+  could be exposed as well in the future.
+- Activiti has a limited query API that is inherited by the application. Potentially `crnk-jpa` could help
+  out a bit in this area.
+- Multi-tenancy is not yet done out-of-the-box.
+
+

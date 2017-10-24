@@ -60,6 +60,9 @@ public class TSImportProcessor implements TSSourceProcessor {
 	}
 
 	private static void addImport(TSSource refSource, TSSource source, TSNamedElement type) {
+		if (type instanceof TSAny) {
+			return;
+		}
 		String path = computeImportPath(refSource, source);
 		TSImport element = source.getImport(path);
 		if (element == null) {
@@ -72,6 +75,12 @@ public class TSImportProcessor implements TSSourceProcessor {
 
 	private static String computeImportPath(TSSource refSource, TSSource source) {
 		StringBuilder pathBuilder = new StringBuilder();
+		if (refSource.getNpmPackage() == null) {
+			throw new IllegalStateException(refSource.getName());
+		}
+		if (source.getNpmPackage() == null) {
+			throw new IllegalStateException(source.getName());
+		}
 		if (!source.getNpmPackage().equals(refSource.getNpmPackage())) {
 			appendThirdPartyImport(pathBuilder, refSource);
 		} else {
@@ -81,8 +90,8 @@ public class TSImportProcessor implements TSSourceProcessor {
 	}
 
 	private static void appendRelativeImport(StringBuilder pathBuilder, TSSource refSource, TSSource source) {
-		String[] srcDirs = source.getDirectory() != null ? source.getDirectory().split("\\/") : new String[0];
-		String[] refDirs = refSource.getDirectory() != null ? refSource.getDirectory().split("\\/") : new String[0];
+		String[] srcDirs = source.getDirectory() != null && source.getDirectory().length() > 0 ? source.getDirectory().split("\\/") : new String[0];
+		String[] refDirs = refSource.getDirectory() != null && refSource.getDirectory().length() > 0 ? refSource.getDirectory().split("\\/") : new String[0];
 
 		int shared = computeSharedPrefix(srcDirs, refDirs);
 		appendParentPath(pathBuilder, srcDirs, shared);

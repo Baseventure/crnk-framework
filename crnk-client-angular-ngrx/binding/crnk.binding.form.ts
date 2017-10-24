@@ -1,4 +1,5 @@
 import {Observable} from "rxjs/Observable";
+import {Subject} from "rxjs/Subject";
 import {Subscription} from "rxjs/Subscription";
 import * as _ from "lodash";
 import "rxjs/add/operator/zip";
@@ -8,9 +9,10 @@ import "rxjs/add/operator/distinct";
 import "rxjs/add/operator/switch";
 import "rxjs/add/operator/finally";
 import "rxjs/add/operator/share";
-import {AbstractControl, NgForm} from "@angular/forms";
+import {NgForm} from "@angular/forms";
 import {
-	NgrxJsonApiService, NgrxJsonApiStore,
+	NgrxJsonApiService,
+	NgrxJsonApiStore,
 	NgrxJsonApiStoreData,
 	Resource,
 	ResourceError,
@@ -19,6 +21,7 @@ import {
 } from 'ngrx-json-api';
 import {Store} from "@ngrx/store";
 import {getNgrxJsonApiStore$, getStoreData$} from './crnk.binding.utils';
+import {ReplaySubject} from "rxjs/ReplaySubject";
 
 
 interface ResourceFieldRef {
@@ -102,6 +105,11 @@ export class FormBinding {
 	private primaryResourceId: ResourceIdentifier = null;
 
 	/**
+	 * list of resources edited by this binding. May include related resources next to the primary one.
+	 */
+	private editResourceIds: { [key: string]: ResourceIdentifier } = {};
+
+	/**
 	 * Subscription to forFormElement changes. Gets automatically cancelled if there are no subscriptions anymore to
 	 * resource$.
 	 */
@@ -111,9 +119,25 @@ export class FormBinding {
 
 	private formControlsInitialized = false;
 
+	private _storeDataSnapshot?: NgrxJsonApiStoreData = null;
+
+	private validSubject = new ReplaySubject<boolean>(1);
+
+	private dirtySubject = new ReplaySubject<boolean>(1);
+
+	public valid: Observable<boolean>;
+
+	public dirty: Observable<boolean>;
+
 
 	constructor(private ngrxJsonApiService: NgrxJsonApiService, private config: FormBindingConfig,
 				private store: Store<any>) {
+
+		this.dirtySubject.next(false);
+		this.validSubject.next(true);
+
+		this.dirty = this.dirtySubject.asObservable().distinctUntilChanged();
+		this.valid = this.validSubject.asObservable().distinctUntilChanged();
 
 		if (this.config.form === null) {
 			throw new Error('no forFormElement provided');
@@ -125,6 +149,7 @@ export class FormBinding {
 		// we make use of share() to keep the this.config.resource$ subscription
 		// as long as there is at least subscriber on this.resource$.
 		this.resource$ = this.ngrxJsonApiService.selectOneResults(this.config.queryId, true)
+			.filter(it => !_.isEmpty(it)) // ignore deletions
 			.filter(it => !it.loading)
 			.map(it => it.data as StoreResource)
 			.filter(it => !_.isEmpty(it)) // ignore deletions
@@ -135,7 +160,9 @@ export class FormBinding {
 			.do(resource => this.primaryResourceId = {type: resource.type, id: resource.id})
 			.withLatestFrom(this.store, (resource, store) => {
 				let jsonapiState = store['NgrxJsonApi']['api'] as NgrxJsonApiStore;
+				this._storeDataSnapshot = jsonapiState.data;
 				this.mapResourceToControlErrors(jsonapiState.data);
+				this.updateDirtyState(jsonapiState.data);
 				return resource;
 			})
 			.finally(() => this.cancelSubscriptions)
@@ -164,6 +191,7 @@ export class FormBinding {
 			// update store from value changes, for more information see
 			// https://embed.plnkr.co/9aNuw6DG9VM4X8vUtkAa?show=app%2Fapp.components.ts,preview
 			const formChanges$ = this.config.form.statusChanges
+				.do(valid => this.validSubject.next(valid === 'VALID'))
 				.filter(valid => valid === 'VALID')
 				.do(() => {
 					// it may take a moment for a form with all controls to initialize and register.
@@ -213,12 +241,25 @@ export class FormBinding {
 						mapped = true;
 					}
 				}
-				if(!mapped){
+				if (!mapped) {
 					newUnmappedErrors.push(resourceError);
 				}
 			}
 			this.unmappedErrors = newUnmappedErrors;
 		}
+	}
+
+	protected updateDirtyState(data: NgrxJsonApiStoreData) {
+		function isDirty(resourceId: ResourceIdentifier) {
+			const resource = data[resourceId.type][resourceId.id];
+			return resource && resource.state !== 'IN_SYNC';
+		}
+
+		var newDirty = isDirty(this.primaryResourceId);
+		for (const editedResourceId of _.values(this.editResourceIds)) {
+			newDirty = newDirty || isDirty(editedResourceId)
+		}
+		this.dirtySubject.next(newDirty);
 	}
 
 	protected toResourceFormName(resource: StoreResource, basicFormName: string) {
@@ -284,16 +325,28 @@ export class FormBinding {
 			const formRef = this.parseResourceFieldRef(formName);
 			if (formRef.path.startsWith('attributes.') || formRef.path.startsWith('relationships.')) {
 				const key = formRef.resourceId.type + '_' + formRef.resourceId.id;
-				let patchedResource = patchedResourceMap[key];
-				if (!patchedResource) {
-					patchedResource = {
-						id: formRef.resourceId.id,
-						type: formRef.resourceId.type,
-						attributes: {}
-					};
-					patchedResourceMap[key] = patchedResource;
+
+				const storeTypeSnapshot = this._storeDataSnapshot[formRef.resourceId.type];
+				const storeResourceSnapshot = storeTypeSnapshot ? storeTypeSnapshot[formRef.resourceId.id] : undefined;
+				const storeValueSnapshot = storeResourceSnapshot ? _.get(storeResourceSnapshot, formRef.path) : undefined;
+				if (!_.isEqual(storeValueSnapshot, value)) {
+					let patchedResource = patchedResourceMap[key];
+					if (!patchedResource) {
+						patchedResource = {
+							id: formRef.resourceId.id,
+							type: formRef.resourceId.type,
+							attributes: {}
+						};
+						patchedResourceMap[key] = patchedResource;
+
+						const resourceKey = formRef.resourceId.id + "@" + formRef.resourceId.type;
+						if (!this.editResourceIds[resourceKey]) {
+							this.editResourceIds[resourceKey] = formRef.resourceId;
+						}
+					}
+					_.set(patchedResource, formRef.path, value);
+
 				}
-				_.set(patchedResource, formRef.path, value);
 			}
 		}
 
