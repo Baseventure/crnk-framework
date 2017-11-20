@@ -14,7 +14,7 @@ import java.util.Set;
 import java.util.SortedSet;
 
 import io.crnk.gen.typescript.RuntimeMetaResolver;
-import io.crnk.gen.typescript.TSGeneratorExtension;
+import io.crnk.gen.typescript.TSGeneratorConfig;
 import io.crnk.gen.typescript.TSNpmConfiguration;
 import io.crnk.gen.typescript.TSRuntimeConfiguration;
 import io.crnk.gen.typescript.internal.TSGeneratorRuntimeContext;
@@ -72,7 +72,7 @@ public class RuntimeClassLoaderFactory {
 
 			sharedClasses = new HashMap<>();
 			sharedClasses.put(GeneratorTrigger.class.getName(), GeneratorTrigger.class);
-			sharedClasses.put(TSGeneratorExtension.class.getName(), TSGeneratorExtension.class);
+			sharedClasses.put(TSGeneratorConfig.class.getName(), TSGeneratorConfig.class);
 			sharedClasses.put(TSNpmConfiguration.class.getName(), TSNpmConfiguration.class);
 			sharedClasses.put(TSRuntimeConfiguration.class.getName(), TSRuntimeConfiguration.class);
 			sharedClasses.put(TSCodeStyle.class.getName(), TSCodeStyle.class);
@@ -111,7 +111,7 @@ public class RuntimeClassLoaderFactory {
 		}
 	}
 
-	private URL getPluginUrl() {
+	public URL getPluginUrl() {
 		// add this plugin itself to the runtime classpath to make integration available
 		URLClassLoader classLoader = (URLClassLoader) getClass().getClassLoader();
 		for (URL gradleClassUrl : classLoader.getURLs()) {
@@ -122,21 +122,23 @@ public class RuntimeClassLoaderFactory {
 		throw new IllegalStateException("crnk-gen-typescript.jar not found in gradle build classpath");
 	}
 
-	private Set<File> getProjectLibraries() {
+	public Set<File> getProjectLibraries() {
 		Set<File> classpath = new HashSet<>();
 
 		SourceSetContainer sourceSets = (SourceSetContainer) project.getProperties().get("sourceSets");
 
-		SortedSet<String> availableSourceSetNames = sourceSets.getNames();
-		for (String sourceSetName : Arrays.asList("main", "test", "integrationTest")) {
-			if (availableSourceSetNames.contains(sourceSetName)) {
-				SourceSet sourceSet = sourceSets.getByName(sourceSetName);
-				classpath.add(sourceSet.getOutput().getClassesDir());
+		if (sourceSets != null) {
+			SortedSet<String> availableSourceSetNames = sourceSets.getNames();
+			for (String sourceSetName : Arrays.asList("main", "test", "integrationTest")) {
+				if (availableSourceSetNames.contains(sourceSetName)) {
+					SourceSet sourceSet = sourceSets.getByName(sourceSetName);
+					classpath.add(sourceSet.getOutput().getClassesDir());
+				}
 			}
 		}
 
 		// add  dependencies from configured gradle configuration to url (usually test or integrationTest)
-		TSGeneratorExtension generatorConfiguration = project.getExtensions().getByType(TSGeneratorExtension.class);
+		TSGeneratorConfig generatorConfiguration = project.getExtensions().getByType(TSGeneratorConfig.class);
 		String configurationName = generatorConfiguration.getRuntime().getConfiguration();
 
 		ConfigurationContainer configurations = project.getConfigurations();
