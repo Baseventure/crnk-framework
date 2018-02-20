@@ -1,5 +1,15 @@
 package io.crnk.client;
 
+import java.io.Serializable;
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.ServiceLoader;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import io.crnk.client.action.ActionStubFactory;
@@ -20,6 +30,7 @@ import io.crnk.client.legacy.ResourceRepositoryStub;
 import io.crnk.client.module.ClientModule;
 import io.crnk.client.module.ClientModuleFactory;
 import io.crnk.client.module.HttpAdapterAware;
+import io.crnk.core.boot.CrnkProperties;
 import io.crnk.core.engine.document.Resource;
 import io.crnk.core.engine.information.repository.RepositoryInformationProvider;
 import io.crnk.core.engine.information.repository.RepositoryMethodAccess;
@@ -35,10 +46,17 @@ import io.crnk.core.engine.internal.jackson.JacksonModule;
 import io.crnk.core.engine.internal.registry.ResourceRegistryImpl;
 import io.crnk.core.engine.internal.repository.RelationshipRepositoryAdapter;
 import io.crnk.core.engine.internal.repository.ResourceRepositoryAdapter;
+import io.crnk.core.engine.internal.utils.ClassUtils;
 import io.crnk.core.engine.internal.utils.JsonApiUrlBuilder;
 import io.crnk.core.engine.internal.utils.PreconditionUtil;
 import io.crnk.core.engine.internal.utils.UrlUtils;
-import io.crnk.core.engine.registry.*;
+import io.crnk.core.engine.properties.NullPropertiesProvider;
+import io.crnk.core.engine.properties.PropertiesProvider;
+import io.crnk.core.engine.registry.DefaultResourceRegistryPart;
+import io.crnk.core.engine.registry.RegistryEntry;
+import io.crnk.core.engine.registry.ResourceEntry;
+import io.crnk.core.engine.registry.ResourceRegistry;
+import io.crnk.core.engine.registry.ResponseRelationshipEntry;
 import io.crnk.core.engine.url.ConstantServiceUrlProvider;
 import io.crnk.core.engine.url.ServiceUrlProvider;
 import io.crnk.core.exception.InvalidResourceException;
@@ -55,18 +73,12 @@ import io.crnk.legacy.internal.DirectResponseResourceEntry;
 import io.crnk.legacy.registry.RepositoryInstanceBuilder;
 import io.crnk.legacy.repository.RelationshipRepository;
 
-import java.io.Serializable;
-import java.lang.reflect.InvocationHandler;
-import java.lang.reflect.Proxy;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
-import java.util.ServiceLoader;
-
 /**
  * Client implementation giving access to JSON API repositories using stubs.
  */
 public class CrnkClient {
+
+	private static final String REST_TEMPLATE_PROVIDER_NAME = "io.crnk.spring.client.RestTemplateAdapterProvider";
 
 	private HttpAdapter httpAdapter;
 
@@ -90,11 +102,26 @@ public class CrnkClient {
 
 	private List<HttpAdapterProvider> httpAdapterProviders = new ArrayList<>();
 
-	public CrnkClient(String serviceUrl) {
-		this(new ConstantServiceUrlProvider(UrlUtils.removeTrailingSlash(serviceUrl)));
+	public enum ClientType {
+		SIMPLE_lINKS,
+		OBJECT_LINKS
 	}
 
-	public CrnkClient(ServiceUrlProvider serviceUrlProvider) {
+	public CrnkClient(String serviceUrl) {
+		this(new ConstantServiceUrlProvider(UrlUtils.removeTrailingSlash(serviceUrl)), ClientType.SIMPLE_lINKS);
+	}
+
+	public CrnkClient(String serviceUrl, ClientType clientType) {
+		this(new ConstantServiceUrlProvider(UrlUtils.removeTrailingSlash(serviceUrl)), clientType);
+	}
+
+	public CrnkClient(ServiceUrlProvider serviceUrlProvider, ClientType clientType) {
+		if (ClassUtils.existsClass(REST_TEMPLATE_PROVIDER_NAME)) {
+			ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+			Class providerClass = ClassUtils.loadClass(classLoader, REST_TEMPLATE_PROVIDER_NAME);
+			HttpAdapterProvider provider = (HttpAdapterProvider) ClassUtils.newInstance(providerClass);
+			registerHttpAdapterProvider(provider);
+		}
 		this.registerHttpAdapterProvider(new OkHttpAdapterProvider());
 		this.registerHttpAdapterProvider(new HttpClientAdapterProvider());
 
@@ -108,9 +135,25 @@ public class CrnkClient {
 
 		objectMapper = new ObjectMapper();
 		objectMapper.enable(SerializationFeature.INDENT_OUTPUT);
-		moduleRegistry.addModule(new JacksonModule(objectMapper));
 
-		documentMapper = new ClientDocumentMapper(moduleRegistry, objectMapper, null);
+		switch (clientType) {
+			case OBJECT_LINKS:
+				moduleRegistry.addModule(new JacksonModule(objectMapper, true));
+				documentMapper = new ClientDocumentMapper(moduleRegistry, objectMapper, new PropertiesProvider() {
+					@Override
+					public String getProperty(String key) {
+						if (key.equals(CrnkProperties.SERIALIZE_LINKS_AS_OBJECTS)) {
+							return "true";
+						}
+						return null;
+					}
+				});
+				break;
+			default:
+				moduleRegistry.addModule(new JacksonModule(objectMapper));
+				documentMapper = new ClientDocumentMapper(moduleRegistry, objectMapper, new NullPropertiesProvider());
+		}
+
 		setProxyFactory(new BasicProxyFactory());
 	}
 
@@ -223,7 +266,7 @@ public class CrnkClient {
 		exceptionMapperRegistry = new ExceptionMapperRegistryBuilder().build(exceptionMapperLookup);
 	}
 
-	@SuppressWarnings({"rawtypes", "unchecked"})
+	@SuppressWarnings({ "rawtypes", "unchecked" })
 	private <T, I extends Serializable> RegistryEntry allocateRepository(Class<T> resourceClass) {
 		ResourceInformationProvider resourceInformationProvider = moduleRegistry.getResourceInformationBuilder();
 
@@ -242,9 +285,9 @@ public class CrnkClient {
 		ResourceRepositoryInformation repositoryInformation =
 				new ResourceRepositoryInformationImpl(resourceInformation.getResourceType(),
 						resourceInformation, RepositoryMethodAccess.ALL);
-		ResourceEntry resourceEntry = new DirectResponseResourceEntry(repositoryInstanceBuilder);
-		List<ResponseRelationshipEntry> relationshipEntries = new ArrayList<>();
-		RegistryEntry registryEntry = new RegistryEntry(resourceInformation, repositoryInformation, resourceEntry, relationshipEntries);
+		ResourceEntry resourceEntry = new DirectResponseResourceEntry(repositoryInstanceBuilder, repositoryInformation);
+		Map<ResourceField, ResponseRelationshipEntry> relationshipEntries = new HashMap<>();
+		RegistryEntry registryEntry = new RegistryEntry(resourceEntry, relationshipEntries);
 		registryEntry.initialize(moduleRegistry);
 		resourceRegistry.addEntry(resourceClass, registryEntry);
 
@@ -253,7 +296,7 @@ public class CrnkClient {
 		return registryEntry;
 	}
 
-	@SuppressWarnings({"unchecked", "rawtypes"})
+	@SuppressWarnings({ "unchecked", "rawtypes" })
 	private void allocateRepositoryRelations(RegistryEntry registryEntry) {
 		ResourceInformation resourceInformation = registryEntry.getResourceInformation();
 		List<ResourceField> relationshipFields = resourceInformation.getRelationshipFields();
@@ -264,7 +307,7 @@ public class CrnkClient {
 		}
 	}
 
-	private void allocateRepositoryRelation(Class sourceClass, Class targetClass) {
+	private RelationshipRepositoryAdapter allocateRepositoryRelation(Class sourceClass, Class targetClass) {
 		// allocate relations as well
 		ClientResourceRegistry clientResourceRegistry = (ClientResourceRegistry) resourceRegistry;
 		if (!clientResourceRegistry.isInitialized(sourceClass)) {
@@ -276,12 +319,17 @@ public class CrnkClient {
 
 		RegistryEntry sourceEntry = resourceRegistry.getEntry(sourceClass);
 		final RegistryEntry targetEntry = resourceRegistry.getEntry(targetClass);
+		String targetResourceType = targetEntry.getResourceInformation().getResourceType();
 
-		final ResourceInformation targetResourceInformation = targetEntry.getResourceInformation();
-		Optional<ResponseRelationshipEntry> optRelationshipEntry = sourceEntry.getRelationshipEntry(targetResourceInformation.getResourceType());
-		if(!optRelationshipEntry.isPresent()) {
+		Map relationshipEntries = sourceEntry.getRelationshipEntries();
+		DirectResponseRelationshipEntry relationshipEntry =
+				(DirectResponseRelationshipEntry) relationshipEntries.get(targetResourceType);
+
+		if (!relationshipEntries.containsKey(targetResourceType)) {
+
 			final RelationshipRepositoryStubImpl relationshipRepositoryStub =
-					new RelationshipRepositoryStubImpl(this, sourceClass, targetClass, sourceEntry.getResourceInformation(), urlBuilder);
+					new RelationshipRepositoryStubImpl(this, sourceClass, targetClass, sourceEntry.getResourceInformation(),
+							urlBuilder);
 			RepositoryInstanceBuilder<RelationshipRepository> relationshipRepositoryInstanceBuilder =
 					new RepositoryInstanceBuilder<RelationshipRepository>(null, null) {
 
@@ -290,16 +338,19 @@ public class CrnkClient {
 							return relationshipRepositoryStub;
 						}
 					};
-			DirectResponseRelationshipEntry relationshipEntry =
+			relationshipEntry =
 					new DirectResponseRelationshipEntry(relationshipRepositoryInstanceBuilder) {
 
 						@Override
 						public String getTargetResourceType() {
-							return targetResourceInformation.getResourceType();
+							return targetEntry.getResourceInformation().getResourceType();
 						}
 					};
-			sourceEntry.getRelationshipEntries().add(relationshipEntry);
+			relationshipEntries.put(targetResourceType, relationshipEntry);
 		}
+		Object repoInstance = relationshipEntry.getRepositoryInstanceBuilder();
+
+		return new RelationshipRepositoryAdapter(sourceEntry.getResourceInformation(), moduleRegistry, repoInstance);
 	}
 
 	/**
@@ -325,7 +376,7 @@ public class CrnkClient {
 		ClassLoader classLoader = repositoryInterfaceClass.getClassLoader();
 		InvocationHandler invocationHandler =
 				new ClientStubInvocationHandler(repositoryInterfaceClass, repositoryStub, actionStub);
-		return (R) Proxy.newProxyInstance(classLoader, new Class[]{repositoryInterfaceClass, ResourceRepositoryV2.class},
+		return (R) Proxy.newProxyInstance(classLoader, new Class[] { repositoryInterfaceClass, ResourceRepositoryV2.class },
 				invocationHandler);
 	}
 
@@ -334,7 +385,7 @@ public class CrnkClient {
 	 * @return stub for the given resourceClass
 	 * @deprecated make use of QuerySpec
 	 */
-	@SuppressWarnings({"unchecked", "rawtypes"})
+	@SuppressWarnings({ "unchecked", "rawtypes" })
 	@Deprecated
 	public <T, I extends Serializable> ResourceRepositoryStub<T, I> getQueryParamsRepository(Class<T> resourceClass) {
 		init();
@@ -350,7 +401,7 @@ public class CrnkClient {
 	 * @param resourceClass repository class
 	 * @return stub for the given resourceClass
 	 */
-	@SuppressWarnings({"unchecked", "rawtypes"})
+	@SuppressWarnings({ "unchecked", "rawtypes" })
 	public <T, I extends Serializable> ResourceRepositoryV2<T, I> getRepositoryForType(Class<T> resourceClass) {
 		init();
 
@@ -366,17 +417,20 @@ public class CrnkClient {
 	public ResourceRepositoryV2<Resource, String> getRepositoryForPath(String resourceType) {
 		init();
 
-		ResourceInformation resourceInformation = new ResourceInformation(moduleRegistry.getTypeParser(), Resource.class, resourceType, null, null);
+		ResourceInformation resourceInformation =
+				new ResourceInformation(moduleRegistry.getTypeParser(), Resource.class, resourceType, null, null);
 		return new ResourceRepositoryStubImpl<>(this, Resource.class, resourceInformation, urlBuilder);
 	}
 
 	/**
 	 * Generic access using {@link Resource} class without type mapping.
 	 */
-	public RelationshipRepositoryV2<Resource, String, Resource, String> getRepositoryForPath(String sourceResourceType, String targetResourceType) {
+	public RelationshipRepositoryV2<Resource, String, Resource, String> getRepositoryForPath(String sourceResourceType,
+			String targetResourceType) {
 		init();
 
-		ResourceInformation sourceResourceInformation = new ResourceInformation(moduleRegistry.getTypeParser(), Resource.class, sourceResourceType, null, null);
+		ResourceInformation sourceResourceInformation =
+				new ResourceInformation(moduleRegistry.getTypeParser(), Resource.class, sourceResourceType, null, null);
 		return new RelationshipRepositoryStubImpl<>(this, Resource.class, Resource.class, sourceResourceInformation, urlBuilder);
 	}
 
@@ -396,16 +450,13 @@ public class CrnkClient {
 	 * class
 	 * @deprecated make use of QuerySpec
 	 */
-	@SuppressWarnings({"unchecked", "rawtypes"})
+	@SuppressWarnings({ "unchecked", "rawtypes" })
 	public <T, I extends Serializable, D, J extends Serializable> RelationshipRepositoryStub<T, I, D, J>
 	getQueryParamsRepository(
 			Class<T> sourceClass, Class<D> targetClass) {
 		init();
 
-		RegistryEntry sourceEntry = resourceRegistry.findEntry(sourceClass);
-		RegistryEntry targetEntry = resourceRegistry.findEntry(targetClass);
-
-		RelationshipRepositoryAdapter repositoryAdapter = sourceEntry.getRelationshipRepositoryForType(targetEntry.getResourceInformation().getResourceType(), null);
+		RelationshipRepositoryAdapter repositoryAdapter = allocateRepositoryRelation(sourceClass, targetClass);
 		return (RelationshipRepositoryStub<T, I, D, J>) repositoryAdapter.getRelationshipRepository();
 	}
 
@@ -415,16 +466,12 @@ public class CrnkClient {
 	 * @return stub for the relationship between the given source and target
 	 * class
 	 */
-	@SuppressWarnings({"unchecked", "rawtypes"})
+	@SuppressWarnings({ "unchecked", "rawtypes" })
 	public <T, I extends Serializable, D, J extends Serializable> RelationshipRepositoryV2<T, I, D, J> getRepositoryForType(
 			Class<T> sourceClass, Class<D> targetClass) {
 		init();
 
-		RegistryEntry sourceEntry = resourceRegistry.findEntry(sourceClass);
-		RegistryEntry targetEntry = resourceRegistry.findEntry(targetClass);
-		allocateRepositoryRelation(sourceClass, targetClass);
-
-		RelationshipRepositoryAdapter repositoryAdapter = sourceEntry.getRelationshipRepositoryForType(targetEntry.getResourceInformation().getResourceType(), null);
+		RelationshipRepositoryAdapter repositoryAdapter = allocateRepositoryRelation(sourceClass, targetClass);
 		return (RelationshipRepositoryV2<T, I, D, J>) repositoryAdapter.getRelationshipRepository();
 	}
 

@@ -1,5 +1,8 @@
 :basedir: ../../../..
 
+anchor:modules[]
+
+
 # Modules
 
 anchor:jpa_module[]
@@ -48,8 +51,23 @@ to Crnk. For example in the case of JAX-RS:
 [source]
 ----
 	TransactionRunner transactionRunner = ...;
-	JpaModule jpaModule = JpaModule.newServerModule(entityManagerFactory, entityManager, transactionRunner);
-	jpaModule.setRepositoryFactory(new ValidatedJpaRepositoryFactory());
+
+	JpaModuleConfig config = new JpaModuleConfig();
+
+	// expose all entitities from provided EntityManagerFactory
+	config.exposeAllEntities(entityManagerFactory);
+
+	// expose single entity
+    config.addRepository(JpaRepositoryConfig.builder(TaskEntity.class).build());
+
+    // expose single entity with additional interface declaration. Interface is used to
+    // extract the list, meta and link information types.
+    config.addRepository(
+      JpaRepositoryConfig.builder(PersonEntity.class)
+           .setInterfaceClass(PersonRepository.class).build()
+    );
+
+	JpaModule jpaModule = JpaModule.createServerModule(config, em, transactionRunner());
 
 	CrnkFeature feature = new CrnkFeature(...);
 	feature.addModule(jpaModule);
@@ -59,18 +77,57 @@ to Crnk. For example in the case of JAX-RS:
 The JPA modules by default looks up the entityManagerFactory and obtains a list
 of registered JPA entities. For each entity a instance of `JpaEntityRepository`
 is registered to Crnk using the module API. Accordingly, every relation
-is registered as `JpaRelationshipRepository`. `JpaModule.setRepositoryFactory`
-allows to provide a factory to change or customized the used repositories.
-To manually select the entities exposed to Crnk use `JpaModule.addEntityClass(...)`
-and `JpaModule.removeEntityClass(...)`. If no `entityManagerFactory` is provided
-to newServerModule, then the registration of entities is omitted and can be done
-manually.
+is registered as `JpaRelationshipRepository`.
 
-The transactionRunner needs to be implemented by the application to hook into the
-transaction processing of the used environment (Spring, JEE, etc.). This might be
-as simple as a Spring bean implementing `TransactionRunner` and adding a
-`@Transactional` annotation. The JPA module makes sure that every call to a
-repository happens within such a transaction boundary.
+- `JpaModuleConfig.setRepositoryFactory` allows to provide a factory to change or customized the used repositories.
+- `exposeAllEntities` takes an `EntityManagerFactory` and exposes all registered entities as
+  JSON API repository.
+- To manually select the entities exposed to Crnk use `JpaModuleConfig.addRepository(...)`.
+ `JpaRepositoryConfig` provides a number of customization options for the exposed entity.
+  `setListClass`, `setListMetaClass` and `setListLinksClass` allow to set the type information and will
+  then return resources having lists, links and meta data of the given type.  `setInterfaceClass`
+  is a shortcut that allows to extract those three types from a repository interface definition
+  (see `TaskRepository` below for an example).
+- `JpaRepositoryConfig.Builder.setRepositoryDecorator` allows to setup a repository decorator that allows to intercept
+  the request and responses and perform changes, like setting up additional links and meta information.
+- `JpaRepositoryConfig` allows to specify DTO mapping, have a look at the later section to this topic.
+- Internally the JpaModule will create instances of `JpaResourceRepository` and  `JpaRelationshipRepository`
+  to register them
+- The transactionRunner needs to be implemented by the application to hook into the transaction processing of the used
+  environment (Spring, JEE, etc.). This might be as simple as a Spring bean implementing `TransactionRunner` and adding a
+  `@Transactional` annotation. The JPA module makes sure that every call to a repository happens within such a transaction
+  boundary. Crnk comes with two default implementations: `SpringTransactionRunner` and
+  `CdiTransactionRunner` that come are included in `crnk-spring` and `crnk-cdi`.
+
+For crnk-client it might be worthwhile to have an interface definition of the otherwise fully generic
+JSON API entity repositories. The interface has the benefit of providing proper typing of meta information,
+link information and list return type. An example can look like:
+
+[source]
+----
+public interface TaskRepository extends ResourceRepositoryV2<TaskEntity, UUID> {
+
+    static class TaskListLinks implements LinksInformation, SelfLinksInformation {
+
+		public String someLink = "test";
+
+	}
+
+	public static class TaskListMeta implements MetaInformation {
+
+		public String someMeta = "test";
+
+	}
+
+	public class TaskList extends ResourceListBase<TaskEntity, TaskListMeta, TaskListLinks> {
+
+	}
+
+	@Override
+	public TaskList findAll(QuerySpec querySpec);
+}
+----
+
 
 To setup a Crnk client with the JPA module use:
 
@@ -82,12 +139,21 @@ To setup a Crnk client with the JPA module use:
 	JpaModule module = JpaModule.newClientModule();
 	setupModule(module, false);
 	client.addModule(module);
+
+	ResourceRepositoryV2<TaskEntity, UUID> genericRepo = client.getRepositoryForType(TypeEntity.class)
+	TaskRepository typedRepo = client.getRepositoryForInterface(TaskRepository.class)
 ----
 
 Have a look at https://github.com/crnk-project/crnk-framework/blob/develop/crnk-jpa/src/test/java/io/crnk/jpa/JpaQuerySpecEndToEndTest.java within the `crnk-jpa`
 test cases to see how everything is used together with `crnk-client`.
 The JPA modules further has a number of more advanced customization options that
 are discussed in the subsequent sections.
+
+
+### JPA Setup with Spring
+
+Have a look at <<jpa_spring,JPA Module Auto Configuration>>. For Spring Boot an auto configuration is
+available that already takes care of some defaults.
 
 
 ### Pagination
@@ -162,7 +228,8 @@ attributes like in the example depicted here:
 	QuerydslQueryFactory queryFactory = (QuerydslQueryFactory) module.getQueryFactory();
 	queryFactory.registerComputedAttribute(TestEntity.class, TestDTO.ATTR_COMPUTED_UPPER_STRING_VALUE,
 		 String.class, basicComputedValueFactory);
-	module.addMappedEntityClass(TestEntity.class, TestDTO.class, new TestDTOMapper(entityManager));
+	module.addRepository(JpaRepositoryConfig.builder(TestEntity.class, TestDTO.class, new TestDTOMapper(entityManager)).build())
+
 ----
 
 and
@@ -210,7 +277,7 @@ anchor:validation_module[]
 ## JSR 303 Validation Module
 
 A `ValidationModule` provided by `io.crnk:crnk-validation` implements
-exception mappers for `javax.validation.ValidationException` and `javax.validation.ConstraintViolationException`.
+resource validation and provides exception mappers for `javax.validation.ValidationException` and `javax.validation.ConstraintViolationException`.
 Among others, it properly translates 'javax.validation.ConstraintViolation' instances to JSON API errors.
 A JSON API error can, among others, contain a source pointer. This source pointer allows a clients/UI to
 display the validation errors next to the corresponding input fields.
@@ -240,6 +307,20 @@ A translated exception can look like:
 ----
 
 Notice the `422` status code used for such errors.
+
+As mentioned above, resource validation mechanism enabled by default will be applied in case of one of the following request
+types: `POST`, `PUT` and `PATCH`. Once described behavior is unwanted,
+module should be defined in the following way:
+
+[source]
+----
+{
+	@Bean
+    ValidationModule validationModule()
+        return ValidationModule.create(false);
+    }
+}
+----
 
 
 anchor:brave_module[]
@@ -499,8 +580,13 @@ anchor:home_module[]
 
 ## Home Module
 
-The `HomeModule` provides an implementation for https://tools.ietf.org/html/draft-nottingham-json-home-06[JSON Home]. It allows
-you to obtain a list of available repositories when accessing the parent page of your repositories (typically `/api`).
+The `HomeModule` provides a listing of available resources in each directory (such as the root `/api/`). Note that
+directory paths always end with a '/' and the `HomeModule` will process the request if there is no resource or
+relationship repository serving that particular path.
+
+The `HomeModule` supports two kinds of formats that can be choosen upon creation. A JSON API-style format where a
+links node holds all links to child directories and repositories. And a JSON HOME format as specified by
+https://tools.ietf.org/html/draft-nottingham-json-home-06[JSON Home].
 
 
 [source]
@@ -509,36 +595,36 @@ you to obtain a list of available repositories when accessing the parent page of
 		...
 ----
 
-The module is currently in an incubator stage. In the Spring Boot example
-applications it looks like:
+In the Spring Boot example applications it looks like:
 
 
 [source]
 ----
 {
-  "resources" : {
-    "tag:schedule" : {
-      "href" : "/schedule/"
-    },
-    "tag:tasks" : {
-      "href" : "/tasks/"
-    },
-    "tag:scheduleDto" : {
-      "href" : "/scheduleDto/"
-    },
-    "tag:meta/collectionType" : {
-      "href" : "/meta/collectionType/"
-    },
-    "tag:projects" : {
-      "href" : "/projects/"
-    },
-     "tag:meta/resource" : {
-	  "href" : "/meta/resource/"
-	},
-	"tag:meta/attribute" : {
-	  "href" : "/meta/attribute/"
-	},
-	...
+  "links" : {
+    "meta" : "http://localhost:8080/api/meta/",
+    "projects" : "http://localhost:8080/api/projects",
+    "resourcesInfo" : "http://localhost:8080/api/resourcesInfo",
+    "schedule" : "http://localhost:8080/api/schedule",
+    "scheduleDto" : "http://localhost:8080/api/scheduleDto",
+    "tasks" : "http://localhost:8080/api/tasks"
+  }
+}
+----
+
+Notice the `meta` entry with a trailing '/' that allows to move to subdirectory `http://localhost:8080/api/meta/`:
+
+[source]
+----
+{
+  "links" : {
+    "arrayType" : "http://localhost:8080/api/meta/arrayType",
+    "attribute" : "http://localhost:8080/api/meta/attribute",
+    "dataObject" : "http://localhost:8080/api/meta/dataObject",
+    "element" : "http://localhost:8080/api/meta/element",
+    "resource" : "http://localhost:8080/api/meta/resource",
+    "type" : "http://localhost:8080/api/meta/type"
+    ...
   }
 }
 ----
@@ -586,6 +672,107 @@ There is further an operations client implementation that works along the regula
 ----
 include::../../../../crnk-operations/src/test/java/io/crnk/operations/OperationsPostTest.java[tags=client]
 ----
+
+An example request in JSON looks like:
+
+[source]
+----
+[ {
+  "op" : "POST",
+  "path" : "movie",
+  "value" : {
+    "id" : "43e7903e-9b14-4610-96f5-69d6f2fa347d",
+    "type" : "movie",
+    "attributes" : {
+      "title" : "test",
+      ...
+    },
+    "relationships" : {
+      ...
+    }
+  }
+}, {
+  "op" : "POST",
+  "path" : "person",
+  "value" : {
+    "id" : "b25bfdbd-8dd6-4abd-a859-f1dedf85246b",
+    "type" : "person",
+    "attributes" : {
+      "name" : "1",
+      "version" : null
+    }
+  }
+}, {
+  "op" : "POST",
+  "path" : "person",
+  "value" : {
+    "id" : "f9d2bda5-d2f4-4c0c-85c7-cc56b6ea91e6",
+    "type" : "person",
+    "attributes" : {
+      "name" : "2",
+      "version" : null
+    }
+  }
+} ]
+----
+
+and an example response JSON looks as follows:
+
+[source]
+----
+[ {
+  "data" : {
+    "id" : "43e7903e-9b14-4610-96f5-69d6f2fa347d",
+    "type" : "movie",
+    "attributes" : {
+      "title" : "test",
+      ...
+    },
+    "relationships" : {
+      ..
+    },
+    "links" : {
+      "self" : "http://localhost:58367/movie/43e7903e-9b14-4610-96f5-69d6f2fa347d"
+    }
+  },
+  "status" : 201
+}, {
+  "data" : {
+    "id" : "b25bfdbd-8dd6-4abd-a859-f1dedf85246b",
+    "type" : "person",
+    "attributes" : {
+      "name" : "1",
+      "version" : 0
+    },
+    "relationships" : {
+      ...
+    },
+    "links" : {
+      "self" : "http://localhost:58367/person/b25bfdbd-8dd6-4abd-a859-f1dedf85246b"
+    }
+  },
+  "status" : 201
+}, {
+  "data" : {
+    "id" : "f9d2bda5-d2f4-4c0c-85c7-cc56b6ea91e6",
+    "type" : "person",
+    "attributes" : {
+      "name" : "2",
+      "version" : 0
+    },
+    "relationships" : {
+      ...
+    },
+    "links" : {
+      "self" : "http://localhost:58367/person/f9d2bda5-d2f4-4c0c-85c7-cc56b6ea91e6"
+    }
+  },
+  "status" : 201
+} ]
+----
+
+Notice in the response a status code for each request. It is import for the `Content-Type` and `Accept` HTTP headers
+to have `application/json-patch+json`, otherwise the `OperationsModule` will ignore such requests.
 
 The current limitations of the implementation are:
 
@@ -755,3 +942,75 @@ starting the approval process, submitting a form and then verifying the changes 
 - Multi-tenancy is not yet done out-of-the-box.
 
 
+
+anchor:spring_modules[]
+
+## Spring Modules and Auto Configuration
+
+All Spring modules are hosted in the `crnk-spring` modules without explicit runtime-time dependency.
+Each module comes with an auto configuration that is enabled if the presence of the particular Spring
+component is detected. Each module comes with an enabled property to disable the auto configuration.
+
+
+### Spring MVC Module
+
+Makes Spring MVC services available in the Crnk Home Module next to the json api repositories to have a list of all offered
+services. Auto configuration is provided by `CrnkSpringMvcAutoConfiguration`.
+
+With `CrnkErrorController` configured by `CrnkErrorControllerAutoConfiguration` additionally a new error controller is
+provided that returns errors in JSON API format. `crnk.spring.mvc.errorController=false` allows to disable the controller.
+
+Further integration similar to the JAX-RS one is expected in the future.
+
+### Spring Cloud Sleuth Module
+
+Integrates in the same fashion as the Crnk Brave module to trace calls from a request to the individual repositories.
+Auto configuration is provided by `CrnkSpringCloudSleuthAutoConfiguration`.
+
+### Spring Security Module
+
+`SpringSecurityModule` provides a mapping of Spring Security exception types to JSON API errors that complements
+the Spring-independent `SecurityModule`.
+
+Auto configuration is provided by `CrnkSecurityAutoConfiguration`. It sets up `SecurityModule` and
+`SpringSecurityModule`. By default access to all repositories is blocked. A bean of type `SecurityModuleConfigurer`
+can be added to grant access to repositories.
+
+
+anchor:jpa_spring[]
+
+### JPA Module Auto Configuration
+
+`CrnkJpaAutoConfiguration` setups the `JpaModule` and `SpringTransactionRunner`. `SpringTransactionRunner` let
+all requests run in a transaction that is automatically rolled back in case of an error. The `JpaModule` is
+by default setup to expose all entities as JSON API repositories. This can be disabled by setting
+`crnk.jpa.exposeAll=false`. The setup of the JPA module can be customized by providing a bean
+implementing `JpaModuleConfigurer`. See `ExampleJpaModuleConfigurer` for an example:
+
+[source]
+.ExampleJpaModuleConfigurer.java
+----
+include::../../../../crnk-examples/spring-boot-example/src/main/java/io/crnk/example/springboot/ExampleJpaModuleConfigurer.java[]
+----
+
+
+
+
+### Validation Module Auto Configuration
+
+`CrnkValidationAutoConfiguration` sets up the `ValidationModule`. This will given validation exception to
+JSON API error mapping. And by default all incoming resources are validated. The later can be disabled by setting
+`crnk.validation.validateResources=false`.
+
+### UI Module Auto Configuration
+
+`CrnkUIAutoConfiguration` sets up the `UIModule`.
+
+### Operations Module Auto Configuration
+
+`CrnkOperationsAutoConfiguration` sets up the `OperationsModule`.
+
+### Meta Module Auto Configuration
+
+`CrnkMetaAutoConfiguration` sets up the `MetaModule` and exposes meta data for all JSON API repositories.
+The `MetaModule` can be customized by providing a bean of type `MetaModuleConfigurer`.

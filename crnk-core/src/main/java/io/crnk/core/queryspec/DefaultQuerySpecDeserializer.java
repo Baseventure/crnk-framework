@@ -139,13 +139,13 @@ public class DefaultQuerySpecDeserializer implements QuerySpecDeserializer {
 		this.typeParser = ctx.getTypeParser();
 	}
 
-	protected QuerySpec createQuerySpec(Class<?> resourceClass) {
-		return new QuerySpec(resourceClass);
+	protected QuerySpec createQuerySpec(ResourceInformation resourceInformation) {
+		return new QuerySpec(resourceInformation);
 	}
 
 	@Override
 	public QuerySpec deserialize(ResourceInformation resourceInformation, Map<String, Set<String>> parameterMap) {
-		QuerySpec rootQuerySpec = createQuerySpec(resourceInformation.getResourceClass());
+		QuerySpec rootQuerySpec = createQuerySpec(resourceInformation);
 		setupDefaults(rootQuerySpec, true);
 
 		List<Parameter> parameters = parseParameters(parameterMap, resourceInformation);
@@ -236,7 +236,7 @@ public class DefaultQuerySpecDeserializer implements QuerySpecDeserializer {
 		Set<Object> typedValues = new HashSet<>();
 		for (String stringValue : parameter.values) {
 			try {
-				@SuppressWarnings({"unchecked", "rawtypes"})
+				@SuppressWarnings({ "unchecked", "rawtypes" })
 				Object value = typeParser.parse(stringValue, (Class) attributeType);
 				typedValues.add(value);
 			}
@@ -257,6 +257,10 @@ public class DefaultQuerySpecDeserializer implements QuerySpecDeserializer {
 
 	protected Class<?> getAttributeType(QuerySpec querySpec, List<String> attributePath) {
 		try {
+			if (attributePath == null) {
+				// no attribute specified, query string expected, use String
+				return String.class;
+			}
 			Class<?> current = querySpec.getResourceClass();
 			for (String propertyName : attributePath) {
 				current = getAttributeType(current, propertyName);
@@ -351,6 +355,9 @@ public class DefaultQuerySpecDeserializer implements QuerySpecDeserializer {
 		}
 		else {
 			param.resourceInformation = rootResourceInformation;
+		}
+		if (param.operator == null) {
+			param.operator = defaultOperator;
 		}
 		return param;
 	}

@@ -1,8 +1,16 @@
 package io.crnk.core.engine.internal.document.mapper;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Set;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.crnk.core.engine.document.Document;
 import io.crnk.core.engine.document.ErrorData;
+import io.crnk.core.engine.document.Relationship;
+import io.crnk.core.engine.document.Resource;
 import io.crnk.core.engine.filter.ResourceFilterDirectory;
 import io.crnk.core.engine.internal.utils.PreconditionUtil;
 import io.crnk.core.engine.properties.PropertiesProvider;
@@ -12,39 +20,50 @@ import io.crnk.core.repository.response.JsonApiResponse;
 import io.crnk.core.utils.Nullable;
 import io.crnk.legacy.internal.RepositoryMethodParameterProvider;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Set;
-
 public class DocumentMapper {
 
 	private final ResourceFilterDirectory resourceFilterDirectory;
 
 	protected PropertiesProvider propertiesProvider;
+
 	private DocumentMapperUtil util;
+
 	private ResourceMapper resourceMapper;
+
 	private IncludeLookupSetter includeLookupSetter;
+
 	private boolean client;
 
-	public DocumentMapper(ResourceRegistry resourceRegistry, ObjectMapper objectMapper, PropertiesProvider propertiesProvider, ResourceFilterDirectory resourceFilterDirectory) {
+	public DocumentMapper(ResourceRegistry resourceRegistry, ObjectMapper objectMapper, PropertiesProvider propertiesProvider,
+			ResourceFilterDirectory resourceFilterDirectory) {
 		this(resourceRegistry, objectMapper, propertiesProvider, resourceFilterDirectory, false);
 	}
 
-	public DocumentMapper(ResourceRegistry resourceRegistry, ObjectMapper objectMapper, PropertiesProvider propertiesProvider, ResourceFilterDirectory resourceFilterDirectory, boolean client) {
+	public DocumentMapper(ResourceRegistry resourceRegistry, ObjectMapper objectMapper, PropertiesProvider propertiesProvider,
+			ResourceFilterDirectory resourceFilterDirectory, boolean client) {
 		this.propertiesProvider = propertiesProvider;
 		this.client = client;
 		this.resourceFilterDirectory = resourceFilterDirectory;
 
 		PreconditionUtil.assertTrue("filterBehavior necessary on server-side", client || resourceFilterDirectory != null);
 
-		this.util = new DocumentMapperUtil(resourceRegistry, objectMapper);
+		this.util = newDocumentMapperUtil(resourceRegistry, objectMapper, propertiesProvider);
 		this.resourceMapper = newResourceMapper(util, client, objectMapper);
-		this.includeLookupSetter = new IncludeLookupSetter(resourceRegistry, resourceMapper, propertiesProvider);
+		this.includeLookupSetter = newIncludeLookupSetter(resourceRegistry, resourceMapper, propertiesProvider);
 	}
 
-	public ResourceFilterDirectory getFilterBehaviorManager(){
+	public ResourceFilterDirectory getFilterBehaviorManager() {
 		return resourceFilterDirectory;
+	}
+
+	protected IncludeLookupSetter newIncludeLookupSetter(ResourceRegistry resourceRegistry, ResourceMapper resourceMapper,
+			PropertiesProvider propertiesProvider) {
+		return new IncludeLookupSetter(resourceRegistry, resourceMapper, propertiesProvider);
+	}
+
+	protected DocumentMapperUtil newDocumentMapperUtil(ResourceRegistry resourceRegistry, ObjectMapper objectMapper,
+			PropertiesProvider propertiesProvider) {
+		return new DocumentMapperUtil(resourceRegistry, objectMapper, propertiesProvider);
 	}
 
 	protected ResourceMapper newResourceMapper(DocumentMapperUtil util, boolean client, ObjectMapper objectMapper) {
@@ -52,45 +71,101 @@ public class DocumentMapper {
 	}
 
 	public Document toDocument(JsonApiResponse response, QueryAdapter queryAdapter) {
-		return toDocument(response, queryAdapter, null);
+		return toDocument(response, queryAdapter, (RepositoryMethodParameterProvider) null);
 	}
 
-	public Document toDocument(JsonApiResponse response, QueryAdapter queryAdapter, RepositoryMethodParameterProvider parameterProvider) {
-		Set<String> eagerLoadedRelations = Collections.emptySet();
-		return toDocument(response, queryAdapter, parameterProvider, eagerLoadedRelations);
+	public Document toDocument(JsonApiResponse response, QueryAdapter queryAdapter,
+			RepositoryMethodParameterProvider parameterProvider) {
+		Set<String> mappingConfig = Collections.emptySet();
+		return toDocument(response, queryAdapter, parameterProvider, mappingConfig);
 	}
 
-	public Document toDocument(JsonApiResponse response, QueryAdapter queryAdapter, RepositoryMethodParameterProvider parameterProvider, Set<String> additionalEagerLoadedRelations) {
+	public Document toDocument(JsonApiResponse response, QueryAdapter queryAdapter,
+			RepositoryMethodParameterProvider parameterProvider, Set<String> fieldsWidthEnforcedIdSerialization) {
+		DocumentMappingConfig mappingConfig = new DocumentMappingConfig();
+		mappingConfig.setParameterProvider(parameterProvider);
+		mappingConfig.setFieldsWithEnforcedIdSerialization(fieldsWidthEnforcedIdSerialization);
+		return toDocument(response, queryAdapter, mappingConfig);
+	}
+
+	public Document toDocument(JsonApiResponse response, QueryAdapter queryAdapter, DocumentMappingConfig mappingConfig) {
 		if (response == null) {
 			return null;
 		}
 
+		ResourceMappingConfig resourceMapping = mappingConfig.getResourceMapping();
+
 		Document doc = new Document();
 		addErrors(doc, response.getErrors());
 		util.setMeta(doc, response.getMetaInformation());
-		util.setLinks(doc, response.getLinksInformation());
-		addData(doc, response.getEntity(), queryAdapter);
-		addRelationDataAndInclusions(doc, response.getEntity(), queryAdapter, parameterProvider, additionalEagerLoadedRelations);
-
+		if (mappingConfig.getResourceMapping().getSerializeLinks()) {
+			util.setLinks(doc, response.getLinksInformation(), queryAdapter);
+		}
+		addData(doc, response.getEntity(), queryAdapter, resourceMapping);
+		addRelationDataAndInclusions(doc, response.getEntity(), queryAdapter, mappingConfig);
+		if (queryAdapter != null && queryAdapter.getCompactMode()) {
+			compact(doc);
+		}
 		return doc;
 	}
 
-	private void addRelationDataAndInclusions(Document doc, Object entity, QueryAdapter queryAdapter, RepositoryMethodParameterProvider parameterProvider, Set<String> additionalEagerLoadedRelations) {
-		if (doc.getData().isPresent() && !client) {
-			includeLookupSetter.setIncludedElements(doc, entity, queryAdapter, parameterProvider, additionalEagerLoadedRelations);
+	/**
+	 * removes unncessary json elements
+	 */
+	private void compact(Document doc) {
+		if (doc.getIncluded() != null) {
+			compact(doc.getIncluded());
+		}
+		if (doc.getData().isPresent()) {
+			if (doc.isMultiple()) {
+				compact(doc.getCollectionData().get());
+			}
+		}
+		else {
+			compact(doc.getSingleData().get());
 		}
 	}
 
-	private void addData(Document doc, Object entity, QueryAdapter queryAdapter) {
+	private void compact(List<Resource> resources) {
+		if (resources != null) {
+			for (Resource resource : resources) {
+				compact(resource);
+			}
+		}
+	}
+
+	private void compact(Resource resource) {
+		Iterator<Relationship> iterator = resource.getRelationships().values().iterator();
+		while (iterator.hasNext()) {
+			Relationship rel = iterator.next();
+			if (!rel.getData().isPresent()) {
+				iterator.remove();
+			}
+		}
+
+	}
+
+	private void addRelationDataAndInclusions(Document doc, Object entity, QueryAdapter queryAdapter, DocumentMappingConfig
+			mappingConfig) {
+		if (doc.getData().isPresent() && !client) {
+			RepositoryMethodParameterProvider parameterProvider = mappingConfig.getParameterProvider();
+			Set<String> fieldsWithEnforceIdSerialization = mappingConfig.getFieldsWithEnforcedIdSerialization();
+			includeLookupSetter.setIncludedElements(doc, entity, queryAdapter, parameterProvider,
+					fieldsWithEnforceIdSerialization);
+		}
+	}
+
+	private void addData(Document doc, Object entity, QueryAdapter queryAdapter, ResourceMappingConfig resourceMappingConfig) {
 		if (entity != null) {
 			if (entity instanceof Iterable) {
 				ArrayList<Object> dataList = new ArrayList<>();
 				for (Object obj : (Iterable<?>) entity) {
-					dataList.add(resourceMapper.toData(obj, queryAdapter));
+					dataList.add(resourceMapper.toData(obj, queryAdapter, resourceMappingConfig));
 				}
 				doc.setData(Nullable.of((Object) dataList));
-			} else {
-				doc.setData(Nullable.of((Object) resourceMapper.toData(entity, queryAdapter)));
+			}
+			else {
+				doc.setData(Nullable.of((Object) resourceMapper.toData(entity, queryAdapter, resourceMappingConfig)));
 			}
 		}
 	}

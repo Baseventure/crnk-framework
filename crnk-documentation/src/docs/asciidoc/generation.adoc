@@ -2,9 +2,6 @@ anchor:generation[]
 
 # Generation
 
-NOTE: this feature is still in incurbation, feedback and contributions welcomed. In particular further frameworks like
-Spring must be supported.
-
 Crnk allows the generation of Typescript stubs for type-safe, client-side web development. Contributions for other
 languages like iOS would be very welcomed.
 
@@ -28,6 +25,8 @@ like:
 include::../../../../crnk-gen-typescript/src/test/resources/expected_schedule_without_expressions.ts[]
 ----
 
+For an example have a look at the Crnk example application, see https://github.com/crnk-project/crnk-example[crnk-project/crnk-example].
+
 Internally the generator has to make use of the running application to gather the necessary information for generation. This
 approach not only supports the typical, manual implement resources and repositories manually, but also
 the ones obtained through third-party modules such the JPA entities exposed by the JPA module. There are different
@@ -35,8 +34,8 @@ possibilities to do that. https://github.com/crnk-project/crnk-framework/blob/ma
 .gradle[crnk-client-angular-ngrx]
 does such a setup manually in Gradle. Alternatively, there is a Gradle plugin taking care of the generator setup. It makes use
 of the JUnit to get
-the application to a running state at built-time. So far a JUnit setup with Deltaspike for JEE application.
-Other non-CDI integrations like Spring will soon. Such a setup may look like:
+the application to a running state at built-time. Currently supported are CDI and Spring-based applications.
+Such a setup may look like:
 
 [source]
 ----
@@ -67,13 +66,19 @@ typescriptGen{
 
 	runtime {
 		configuration = 'typescriptGenRuntime'
+        spring {
+        	profile = 'test'
+        	configuration = 'ch.adnovum.arch.demo.management.service.ManagementApplication'
+        	initializerMethod = 'someInitMethod'
+        	defaultProperties['someKey'] = 'someValue'
+        }
 	}
 
 	npm {
 		packageVersion = '0.0.1'
-		packageName = '@adnovum/moap-movie-management-api'
-		description = 'movie management API to access backend'
-		gitRepository = 'https://.../bitbucket/scm/moap/moap-movie.git'
+		packageName = '@crnk/example-api'
+		description = 'example API to access example backend'
+		gitRepository = 'https://.../bitbucket/scm/crnk/example.git'
 		license = 'MIT'
 		// packagingEnabled = false
 		// outputDir = ...
@@ -82,8 +87,10 @@ typescriptGen{
 	includes = ['resources.task']
 	excludes = ['resources.project']
 
-	packageMapping['resources.something'] = '@crnk/some-demo-library'
-	peerDependencies['ngrx-json-api'] = '>=2.0.0-beta.6'
+	forked = true
+
+	packageMapping['resources.something'] = '@crnk/some-other-library'
+	peerDependencies['ngrx-json-api'] = '>=2.2.0'
 	generateExpressions = true
 
 	// genDir = ...
@@ -94,17 +101,34 @@ typescriptGen.init()
 
 ----
 
+The basic Gradle setup makes use of:
+
 - the `moowork` plugin is used to to gain a `node` setup.
-- `packageName`, `description`, `license`, `gitRepository` are added to the generated `package.json`.
-- by default the package version matches the npm version.
-- `crnk-meta` is used to gather a meta model of the underlying resources (or a any other type of object like JPA entities).
-  Important to know is that every object is assigned a string-based meta id. By default the
+- `crnk-meta` is used as dependency to gather a meta model of the underlying resources (or a any other type of object
+  like JPA entities). Important to know is that every object is assigned a string-based meta id. By default the
   meta id matches `resources.<resourceType>`. For example a Task resource with resource type `task` has a
   `resources.task` meta id.
 - applying `crnk-gen-typescript` results in a new `assembleTypescript` task. Consumers may want to add
   that task to `assemble` as dependency.
-- `runtime.configuration` sets the Gradle configuration to use to obtain a classpath. In the given example
+
+
+The plugin is in need for a running application to extract the set of available resources. The `runtime` section provides
+a number of possibilities how this can be achieved. Typically the simplest way to have a running application is to
+run in the same manner as for testing. This can be achieved, for example, by replicating the classpath, configuration,
+environment, Spring profiles, etc. Currently supported are Spring and CDI to achieve this. Please open up a ticket
+if you desire to work in another environment. There are a number of properties to do that:
+
+- `runtime.configuration` sets the Gradle configuration to use to construct a classpath. In the given example
    `typescriptGenRuntime` is used. You may also use `compile` or anything else.
+- for CDI it will work out-of-the-box if Weld is found on the classpath.
+- for Spring properties allow to set the Spring profile, default properties and configuration
+  class to use. Optionally an `initializerMethod` can be specified that is invoked before the
+  Spring application to perform further customization.
+
+The plugin allows various further customization options:
+
+- `packageName`, `description`, `license`, `gitRepository` are added to the generated `package.json`.
+- by default the package version matches the npm version.
 - `packagingEnabled`  triggers the generation of a `package.json` and `tsconfig.json` file (`true` as default).
   Useful to publish the stubs to an NPM repository for use by other projects.
   Setting it to false will result in the generation of the Typescript files only. This may be used to generate
@@ -118,9 +142,12 @@ typescriptGen.init()
   `something/*` resource type resp. `resources.something` meta id prefix are included from a `@crnk/some-demo-library`
   library and no longer get generated manually.
 - `includes` and `excludes` allow to include and exclude resources from generation based on their meta id.
+- by default the generation takes place in a forked process. Since the generator typically
+  runs the application and that may not properly cleanup, it is recommended to let the
+  generator fork a new process to avoid resource leakage in Gradle daemons and
+  have more stable builds.
 
 
-NOTE: the generator plugin is not yet included in any example applications. It is not possible to
-include a plugin from within the same project. At some point an external example application will be
-setup to showcase the use of the plugin.
+
+
 

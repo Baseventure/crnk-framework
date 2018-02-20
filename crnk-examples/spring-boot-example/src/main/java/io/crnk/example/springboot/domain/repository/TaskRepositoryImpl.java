@@ -1,38 +1,30 @@
 package io.crnk.example.springboot.domain.repository;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
-import javax.validation.ConstraintViolation;
-import javax.validation.ConstraintViolationException;
-import javax.validation.Validator;
-import javax.validation.ValidatorFactory;
-
+import io.crnk.core.exception.BadRequestException;
 import io.crnk.core.exception.ResourceNotFoundException;
 import io.crnk.core.queryspec.QuerySpec;
+import io.crnk.core.repository.ResourceRepositoryBase;
 import io.crnk.core.resource.list.ResourceList;
 import io.crnk.example.springboot.domain.model.Task;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+// tag::doc[]
 @Component
-public class TaskRepositoryImpl implements TaskRepository {
+public class TaskRepositoryImpl extends ResourceRepositoryBase<Task, Long> implements TaskRepository {
 
-	private static final Map<Long, Task> REPOSITORY = new ConcurrentHashMap<>();
+	// for simplicity we make use of static, should not be used in real applications
+	private static final Map<Long, Task> tasks = new ConcurrentHashMap<>();
 
 	private static final AtomicLong ID_GENERATOR = new AtomicLong(4);
 
-	private final ValidatorFactory validatorFactory;
-
-	private ProjectRepositoryImpl projectRepository;
 
 	@Autowired
-	public TaskRepositoryImpl(ValidatorFactory validatorFactory, ProjectRepositoryImpl projectRepository) {
-		this.projectRepository = projectRepository;
-		this.validatorFactory = validatorFactory;
+	public TaskRepositoryImpl() {
+		super(Task.class);
 		Task task = new Task(1L, "Create tasks");
 		task.setProjectId(123L);
 		save(task);
@@ -46,28 +38,18 @@ public class TaskRepositoryImpl implements TaskRepository {
 
 	@Override
 	public <S extends Task> S save(S entity) {
-		validate(entity);
 		if (entity.getId() == null) {
 			entity.setId(ID_GENERATOR.getAndIncrement());
 		}
-		REPOSITORY.put(entity.getId(), entity);
+		tasks.put(entity.getId(), entity);
 		return entity;
-	}
-
-	/**
-	 * @Validated and @Valid to not seem to properly work in Spring with interface for some reason. Doing
-	 * programmatic validation instead.
-	 */
-	private <S extends Task> void validate(S entity) {
-		Validator validator = validatorFactory.getValidator();
-		Set<ConstraintViolation<S>> violations = validator.validate(entity);
-		if (!violations.isEmpty()) {
-			throw new ConstraintViolationException(violations);
-		}
 	}
 
 	@Override
 	public <S extends Task> S create(S entity) {
+		if (entity.getId() != null && tasks.containsKey(entity.getId())) {
+			throw new BadRequestException("Task already exists");
+		}
 		return save(entity);
 	}
 
@@ -78,36 +60,22 @@ public class TaskRepositoryImpl implements TaskRepository {
 
 	@Override
 	public Task findOne(Long taskId, QuerySpec querySpec) {
-		Task task = REPOSITORY.get(taskId);
+		Task task = tasks.get(taskId);
 		if (task == null) {
-			throw new ResourceNotFoundException("Project not found!");
-		}
-		if (task.getProject() == null) {
-			task.setProject(projectRepository.findOne(task.getProjectId(), new QuerySpec(Task.class)));
+			throw new ResourceNotFoundException("Task not found!");
 		}
 		return task;
 	}
 
 	@Override
 	public ResourceList<Task> findAll(QuerySpec querySpec) {
-		return querySpec.apply(REPOSITORY.values());
+		return querySpec.apply(tasks.values());
 	}
 
-	@Override
-	public ResourceList<Task> findAll(Iterable<Long> taskIds, QuerySpec querySpec) {
-		List<Task> foundTasks = new ArrayList<>();
-		for (Map.Entry<Long, Task> entry : REPOSITORY.entrySet()) {
-			for (Long id : taskIds) {
-				if (id.equals(entry.getKey())) {
-					foundTasks.add(entry.getValue());
-				}
-			}
-		}
-		return querySpec.apply(foundTasks);
-	}
 
 	@Override
 	public void delete(Long taskId) {
-		REPOSITORY.remove(taskId);
+		tasks.remove(taskId);
 	}
 }
+// end::doc[]

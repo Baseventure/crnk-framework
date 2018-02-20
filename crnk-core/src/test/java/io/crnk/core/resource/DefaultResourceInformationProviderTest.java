@@ -1,6 +1,7 @@
 package io.crnk.core.resource;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.Assert.assertNull;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -45,6 +46,7 @@ import org.junit.Test;
 import org.junit.rules.ExpectedException;
 import org.mockito.Mockito;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.Future;
@@ -52,10 +54,15 @@ import java.util.concurrent.Future;
 public class DefaultResourceInformationProviderTest {
 
 	private static final String NAME_PROPERTY = "underlyingName";
+
 	private final ResourceInformationProvider resourceInformationProvider =
-			new DefaultResourceInformationProvider(new NullPropertiesProvider(), new DefaultResourceFieldInformationProvider(), new JacksonResourceFieldInformationProvider());
+			new DefaultResourceInformationProvider(new NullPropertiesProvider(), new DefaultResourceFieldInformationProvider(),
+					new JacksonResourceFieldInformationProvider());
+
 	private final ResourceInformationProviderContext context =
-			new DefaultResourceInformationProviderContext(resourceInformationProvider, new DefaultInformationBuilder(new TypeParser()), new TypeParser(), new ObjectMapper());
+			new DefaultResourceInformationProviderContext(resourceInformationProvider,
+					new DefaultInformationBuilder(new TypeParser()), new TypeParser(), new ObjectMapper());
+
 	@Rule
 	public ExpectedException expectedException = ExpectedException.none();
 
@@ -306,29 +313,35 @@ public class DefaultResourceInformationProviderTest {
 
 	@Test
 	public void shouldHaveNoneForDefaultLookupBehavior() throws Exception {
-		ResourceInformation resourceInformation = resourceInformationProvider.build(JsonResourceWithDefaultLookupBehaviorRelationship.class);
+		ResourceInformation resourceInformation =
+				resourceInformationProvider.build(JsonResourceWithDefaultLookupBehaviorRelationship.class);
 
-		assertThat(resourceInformation.getRelationshipFields()).extracting("lookupIncludeBehavior").contains(LookupIncludeBehavior.NONE);
+		assertThat(resourceInformation.getRelationshipFields()).extracting("lookupIncludeBehavior")
+				.contains(LookupIncludeBehavior.NONE);
 	}
 
 	@Test
 	public void shouldInheritGlobalForDefaultLookupBehaviorWhenDefault() throws Exception {
 		ResourceInformationProvider resourceInformationProviderWithProperty =
 				getResourceInformationProviderWithProperty(CrnkProperties.INCLUDE_AUTOMATICALLY_OVERWRITE, "true");
-		ResourceInformation resourceInformation = resourceInformationProviderWithProperty.build(JsonResourceWithDefaultLookupBehaviorRelationship.class);
+		ResourceInformation resourceInformation =
+				resourceInformationProviderWithProperty.build(JsonResourceWithDefaultLookupBehaviorRelationship.class);
 
-		assertThat(resourceInformation.getRelationshipFields()).extracting("lookupIncludeBehavior").contains(LookupIncludeBehavior.AUTOMATICALLY_ALWAYS);
+		assertThat(resourceInformation.getRelationshipFields()).extracting("lookupIncludeBehavior")
+				.contains(LookupIncludeBehavior.AUTOMATICALLY_ALWAYS);
 	}
 
 	@Test
 	public void shouldOverrideGlobalLookupBehavior() throws Exception {
 		ResourceInformationProvider resourceInformationProviderWithProperty =
 				getResourceInformationProviderWithProperty(CrnkProperties.INCLUDE_AUTOMATICALLY_OVERWRITE, "true");
-		ResourceInformation resourceInformation = resourceInformationProviderWithProperty.build(JsonResourceWithOverrideLookupBehaviorRelationship.class);
+		ResourceInformation resourceInformation =
+				resourceInformationProviderWithProperty.build(JsonResourceWithOverrideLookupBehaviorRelationship.class);
 
 		// Global says automatically always, but relationship says only when null.
 		// Relationship annotation should win in this case.
-		assertThat(resourceInformation.getRelationshipFields()).extracting("lookupIncludeBehavior").contains(LookupIncludeBehavior.AUTOMATICALLY_WHEN_NULL);
+		assertThat(resourceInformation.getRelationshipFields()).extracting("lookupIncludeBehavior")
+				.contains(LookupIncludeBehavior.AUTOMATICALLY_WHEN_NULL);
 	}
 
 	private ResourceInformationProvider getResourceInformationProviderWithProperty(String key, String value) {
@@ -357,7 +370,8 @@ public class DefaultResourceInformationProviderTest {
 
 		assertThat(resourceInformation.getRelationshipFields()).isNotEmpty().hasSize(2).extracting("type").contains(Future.class)
 				.contains(Collection.class);
-		assertThat(resourceInformation.getRelationshipFields()).extracting("serializeType").contains(SerializeType.LAZY, SerializeType.LAZY);
+		assertThat(resourceInformation.getRelationshipFields()).extracting("serializeType")
+				.contains(SerializeType.LAZY, SerializeType.LAZY);
 		assertThat(resourceInformation.getRelationshipFields()).extracting("lookupIncludeBehavior")
 				.contains(LookupIncludeBehavior.NONE, LookupIncludeBehavior.NONE);
 		assertThat(resourceInformation.getRelationshipFields()).extracting("resourceFieldType")
@@ -371,11 +385,19 @@ public class DefaultResourceInformationProviderTest {
 		assertThat(resourceInformation.getRelationshipFields()).isNotEmpty().hasSize(2).extracting("type").contains(Future.class)
 				.contains(Collection.class);
 
-		assertThat(resourceInformation.getRelationshipFields()).extracting("serializeType").contains(SerializeType.ONLY_ID, SerializeType.EAGER);
+		assertThat(resourceInformation.getRelationshipFields()).extracting("serializeType")
+				.contains(SerializeType.ONLY_ID, SerializeType.EAGER);
 		assertThat(resourceInformation.getRelationshipFields()).extracting("lookupIncludeBehavior")
 				.contains(LookupIncludeBehavior.AUTOMATICALLY_ALWAYS, LookupIncludeBehavior.AUTOMATICALLY_WHEN_NULL);
 		assertThat(resourceInformation.getRelationshipFields()).extracting("resourceFieldType")
 				.contains(ResourceFieldType.RELATIONSHIP, ResourceFieldType.RELATIONSHIP);
+	}
+
+	@Test
+	public void shouldIgnoreCustomGetNamedMethods() {
+		ResourceInformation resourceInformation = resourceInformationProvider.build(JsonApiRelationTypeCustomGetMethod.class);
+
+		assertNull(resourceInformation.getRelationshipFields().get(0).getIdType());
 	}
 
 	@JsonApiResource(type = "tasks")
@@ -468,6 +490,7 @@ public class DefaultResourceInformationProviderTest {
 
 		@JsonApiId
 		private Long id;
+
 		private String accessorField;
 
 		public String getAccessorField() {
@@ -503,6 +526,7 @@ public class DefaultResourceInformationProviderTest {
 	private static class IgnoredStaticAttributeResource {
 
 		public static String attribute;
+
 		@JsonApiId
 		public Long id;
 	}
@@ -511,6 +535,7 @@ public class DefaultResourceInformationProviderTest {
 	private static class IgnoredTransientAttributeResource {
 
 		public transient int attribute;
+
 		@JsonApiId
 		public Long id;
 
@@ -531,13 +556,16 @@ public class DefaultResourceInformationProviderTest {
 		}
 	}
 
-	@JsonPropertyOrder({"b", "a", "c"})
+	@JsonPropertyOrder({ "b", "a", "c" })
 	@JsonApiResource(type = "orderedResource")
 	private static class OrderedResource {
 
 		public String c;
+
 		public String b;
+
 		public String a;
+
 		@JsonApiId
 		private Long id;
 	}
@@ -547,8 +575,11 @@ public class DefaultResourceInformationProviderTest {
 	private static class AlphabeticResource {
 
 		public String c;
+
 		public String b;
+
 		public String a;
+
 		@JsonApiId
 		private Long id;
 	}
@@ -558,8 +589,10 @@ public class DefaultResourceInformationProviderTest {
 
 		@JsonApiMetaInformation
 		public String c;
+
 		@JsonApiMetaInformation
 		public String b;
+
 		@JsonApiId
 		private Long id;
 	}
@@ -569,8 +602,10 @@ public class DefaultResourceInformationProviderTest {
 
 		@JsonApiLinksInformation
 		public String c;
+
 		@JsonApiLinksInformation
 		public String b;
+
 		@JsonApiId
 		private Long id;
 	}
@@ -579,6 +614,7 @@ public class DefaultResourceInformationProviderTest {
 	private static class DifferentTypes {
 
 		public Future<String> field;
+
 		@JsonApiId
 		public Long id;
 
@@ -593,6 +629,7 @@ public class DefaultResourceInformationProviderTest {
 
 		@JsonApiToOne
 		public Future<String> field;
+
 		@JsonApiId
 		private Long id;
 
@@ -606,8 +643,10 @@ public class DefaultResourceInformationProviderTest {
 
 		@JsonApiRelation
 		public Future<String> field;
+
 		@JsonApiRelation
 		public Collection<Future<String>> fields;
+
 		@JsonApiId
 		public Long id;
 
@@ -621,8 +660,10 @@ public class DefaultResourceInformationProviderTest {
 
 		@JsonApiRelation(lookUp = LookupIncludeBehavior.AUTOMATICALLY_ALWAYS, serialize = SerializeType.EAGER)
 		public Future<String> field;
+
 		@JsonApiRelation(lookUp = LookupIncludeBehavior.AUTOMATICALLY_WHEN_NULL, serialize = SerializeType.ONLY_ID)
 		public Collection<Future<String>> fields;
+
 		@JsonApiId
 		public Long id;
 
@@ -631,15 +672,31 @@ public class DefaultResourceInformationProviderTest {
 		}
 	}
 
-	private static interface JsonIgnoreMethodInterface {
-		@JsonIgnore
-		public String getIgnoredMember();
+	@JsonApiResource(type = "jsonAPIRelationType")
+	private static class JsonApiRelationTypeCustomGetMethod {
 
-		public String getNotIgnoredMember();
+		@JsonApiRelation
+		public List<JsonApiRelationType> fields;
+
+		@JsonApiId
+		public Long id;
+
+		public Iterable<Long> getFieldIds() {
+			return new ArrayList<>();
+		}
+	}
+
+	private interface JsonIgnoreMethodInterface {
+
+		@JsonIgnore
+		String getIgnoredMember();
+
+		String getNotIgnoredMember();
 	}
 
 	@JsonApiResource(type = "jsonIgnoredInterfaceMethod")
 	private static class JsonIgnoreMethodImpl implements JsonIgnoreMethodInterface {
+
 		@JsonApiId
 		public Long id;
 
@@ -656,6 +713,7 @@ public class DefaultResourceInformationProviderTest {
 
 	@JsonApiResource(type = "jsonResourceWithDefaultLookupBehaviorRelationship")
 	private static class JsonResourceWithDefaultLookupBehaviorRelationship {
+
 		@JsonApiId
 		public Long id;
 
@@ -665,6 +723,7 @@ public class DefaultResourceInformationProviderTest {
 
 	@JsonApiResource(type = "jsonResourceWithOverrideLookupBehaviorRelationship")
 	private static class JsonResourceWithOverrideLookupBehaviorRelationship {
+
 		@JsonApiId
 		public Long id;
 

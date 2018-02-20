@@ -63,17 +63,28 @@ public class DefaultResourceFieldInformationProvider implements ResourceFieldInf
 	}
 
 	@Override
+	public Optional<RelationshipRepositoryBehavior> getRelationshipRepositoryBehavior(BeanAttributeInformation attributeDesc) {
+		Optional<JsonApiRelation> jsonApiRelation = attributeDesc.getAnnotation(JsonApiRelation.class);
+		if (jsonApiRelation.isPresent()) {
+			return Optional.of(jsonApiRelation.get().repositoryBehavior());
+		}
+		return Optional.empty();
+	}
+
+	@Override
 	public Optional<LookupIncludeBehavior> getLookupIncludeBehavior(BeanAttributeInformation attributeDesc) {
 		Optional<JsonApiRelation> jsonApiRelation = attributeDesc.getAnnotation(JsonApiRelation.class);
 		if (jsonApiRelation.isPresent()) {
 			return Optional.of(jsonApiRelation.get().lookUp());
 		}
 
-		Optional<JsonApiLookupIncludeAutomatically> jsonApiLookupIncludeAutomatically = attributeDesc.getAnnotation(JsonApiLookupIncludeAutomatically.class);
+		Optional<JsonApiLookupIncludeAutomatically> jsonApiLookupIncludeAutomatically =
+				attributeDesc.getAnnotation(JsonApiLookupIncludeAutomatically.class);
 		if (jsonApiLookupIncludeAutomatically.isPresent()) {
 			if (jsonApiLookupIncludeAutomatically.get().overwrite()) {
 				return Optional.of(LookupIncludeBehavior.AUTOMATICALLY_ALWAYS);
-			} else {
+			}
+			else {
 				return Optional.of(LookupIncludeBehavior.AUTOMATICALLY_WHEN_NULL);
 			}
 		}
@@ -109,7 +120,9 @@ public class DefaultResourceFieldInformationProvider implements ResourceFieldInf
 	@Override
 	public Optional<Boolean> isIgnored(BeanAttributeInformation attributeDesc) {
 		Field field = attributeDesc.getField();
-		if (field != null && Modifier.isTransient(field.getModifiers())) {
+		boolean isTransient = field != null && Modifier.isTransient(field.getModifiers());
+		boolean relationshipIdField = attributeDesc.getAnnotation(JsonApiRelationId.class).isPresent();
+		if (isTransient || relationshipIdField) {
 			return Optional.of(true);
 		}
 		return Optional.empty();

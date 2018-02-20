@@ -1,22 +1,39 @@
 package io.crnk.core.engine.registry;
 
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Collectors;
+
+import io.crnk.core.engine.document.ErrorData;
+import io.crnk.core.engine.error.ErrorResponse;
+import io.crnk.core.engine.error.ExceptionMapper;
 import io.crnk.core.engine.information.repository.ResourceRepositoryInformation;
+import io.crnk.core.engine.information.resource.ResourceField;
 import io.crnk.core.engine.information.resource.ResourceInformation;
+import io.crnk.core.engine.internal.exception.ExceptionMapperRegistry;
 import io.crnk.core.engine.internal.repository.RelationshipRepositoryAdapter;
 import io.crnk.core.engine.internal.repository.ResourceRepositoryAdapter;
 import io.crnk.core.engine.internal.utils.PreconditionUtil;
+import io.crnk.core.engine.query.QueryAdapter;
 import io.crnk.core.exception.RelationshipRepositoryNotFoundException;
+import io.crnk.core.exception.ResourceFieldNotFoundException;
 import io.crnk.core.module.ModuleRegistry;
-import io.crnk.core.utils.Optional;
+import io.crnk.core.queryspec.QuerySpec;
+import io.crnk.core.queryspec.internal.QuerySpecAdapter;
+import io.crnk.core.repository.ResourceRepositoryV2;
+import io.crnk.core.repository.response.JsonApiResponse;
+import io.crnk.core.resource.list.DefaultResourceList;
+import io.crnk.core.resource.list.ResourceList;
 import io.crnk.legacy.internal.DirectResponseRelationshipEntry;
 import io.crnk.legacy.internal.DirectResponseResourceEntry;
 import io.crnk.legacy.internal.RepositoryMethodParameterProvider;
 import io.crnk.legacy.registry.AnnotatedRelationshipEntryBuilder;
 import io.crnk.legacy.registry.AnnotatedResourceEntry;
-
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Objects;
 
 /**
  * Holds information about a resource of type <i>T</i> and its repositories. It
@@ -24,33 +41,24 @@ import java.util.Objects;
  * information about the resource, - ResourceEntry instance, - List of all
  * repositories for relationships defined in resource class. - Parent
  * RegistryEntry if a resource inherits from another resource
- *
- * @param <T> resource type
  */
 public class RegistryEntry {
 
-	private final ResourceInformation resourceInformation;
-
 	private final ResourceEntry resourceEntry;
 
-	private final List<ResponseRelationshipEntry> relationshipEntries;
+	private final Map<ResourceField, ResponseRelationshipEntry> relationshipEntries;
 
 	private RegistryEntry parentRegistryEntry = null;
 
 	private ModuleRegistry moduleRegistry;
 
-	private ResourceRepositoryInformation repositoryInformation;
-
-	public RegistryEntry(ResourceRepositoryInformation repositoryInformation, @SuppressWarnings("SameParameterValue") ResourceEntry resourceEntry) {
-		this(repositoryInformation.getResourceInformation().get(), repositoryInformation, resourceEntry, new LinkedList<ResponseRelationshipEntry>());
+	public RegistryEntry(ResourceEntry resourceEntry) {
+		this(resourceEntry, new HashMap<>());
 	}
 
-	public RegistryEntry(ResourceInformation resourceInformation, ResourceRepositoryInformation repositoryInformation, ResourceEntry resourceEntry, List<ResponseRelationshipEntry> relationshipEntries) {
-		this.repositoryInformation = repositoryInformation;
-		this.resourceInformation = resourceInformation;
+	public RegistryEntry(ResourceEntry resourceEntry, Map<ResourceField, ResponseRelationshipEntry> relationshipEntries) {
 		this.resourceEntry = resourceEntry;
 		this.relationshipEntries = relationshipEntries;
-		PreconditionUtil.assertNotNull("no resourceInformation", resourceInformation);
 	}
 
 	public void initialize(ModuleRegistry moduleRegistry) {
@@ -63,7 +71,8 @@ public class RegistryEntry {
 		Object repoInstance = null;
 		if (resourceEntry instanceof DirectResponseResourceEntry) {
 			repoInstance = ((DirectResponseResourceEntry) resourceEntry).getResourceRepository();
-		} else if (resourceEntry instanceof AnnotatedResourceEntry) {
+		}
+		else if (resourceEntry instanceof AnnotatedResourceEntry) {
 			repoInstance = ((AnnotatedResourceEntry) resourceEntry).build(parameterProvider);
 		}
 
@@ -71,34 +80,33 @@ public class RegistryEntry {
 			((ResourceRegistryAware) repoInstance).setResourceRegistry(moduleRegistry.getResourceRegistry());
 		}
 
+		ResourceInformation resourceInformation = getResourceInformation();
 		return new ResourceRepositoryAdapter(resourceInformation, moduleRegistry, repoInstance);
 	}
 
-	public List<ResponseRelationshipEntry> getRelationshipEntries() {
-		return relationshipEntries;
-	}
-
-	public Optional<ResponseRelationshipEntry> getRelationshipEntry(String targetResourceType){
-		for (ResponseRelationshipEntry relationshipEntry : relationshipEntries) {
-			if (relationshipEntry.getTargetResourceType() == null || targetResourceType.equals(relationshipEntry.getTargetResourceType())) {
-				return Optional.of(relationshipEntry);
-			}
+	public RelationshipRepositoryAdapter getRelationshipRepository(String fieldName, RepositoryMethodParameterProvider
+			parameterProvider) {
+		ResourceField field = getResourceInformation().findFieldByUnderlyingName(fieldName);
+		if (field == null) {
+			throw new ResourceFieldNotFoundException("field=" + fieldName);
 		}
-		return Optional.empty();
+		return getRelationshipRepository(field, parameterProvider);
 	}
 
 	@SuppressWarnings("unchecked")
-	public RelationshipRepositoryAdapter getRelationshipRepositoryForType(String targetResourceType, RepositoryMethodParameterProvider parameterProvider) {
-		Optional<ResponseRelationshipEntry> optRelationshipEntry = getRelationshipEntry(targetResourceType);
-		if (!optRelationshipEntry.isPresent()) {
-			throw new RelationshipRepositoryNotFoundException(resourceInformation.getResourceType(), targetResourceType);
+	public RelationshipRepositoryAdapter getRelationshipRepository(ResourceField field, RepositoryMethodParameterProvider
+			parameterProvider) {
+		ResponseRelationshipEntry relationshipEntry = relationshipEntries.get(field);
+		if (relationshipEntry == null) {
+			throw new RelationshipRepositoryNotFoundException(getResourceInformation().getResourceType(),
+					field.getUnderlyingName());
 		}
-		ResponseRelationshipEntry relationshipEntry = optRelationshipEntry.get();
 
 		Object repoInstance;
 		if (relationshipEntry instanceof AnnotatedRelationshipEntryBuilder) {
 			repoInstance = ((AnnotatedRelationshipEntryBuilder) relationshipEntry).build(parameterProvider);
-		} else {
+		}
+		else {
 			repoInstance = ((DirectResponseRelationshipEntry) relationshipEntry).getRepositoryInstanceBuilder();
 		}
 
@@ -106,18 +114,19 @@ public class RegistryEntry {
 			((ResourceRegistryAware) repoInstance).setResourceRegistry(moduleRegistry.getResourceRegistry());
 		}
 
-		return new RelationshipRepositoryAdapter(resourceInformation, moduleRegistry, repoInstance);
+		return new RelationshipRepositoryAdapter(getResourceInformation(), moduleRegistry, repoInstance);
 	}
 
 	public ResourceInformation getResourceInformation() {
-		return resourceInformation;
+		return resourceEntry.getRepositoryInformation().getResourceInformation().get();
 	}
 
 	public ResourceRepositoryInformation getRepositoryInformation() {
-		return repositoryInformation;
+		return resourceEntry.getRepositoryInformation();
 	}
 
 	public RegistryEntry getParentRegistryEntry() {
+		ResourceInformation resourceInformation = getResourceInformation();
 		String superResourceType = resourceInformation.getSuperResourceType();
 		if (superResourceType != null) {
 			ResourceRegistry resourceRegistry = moduleRegistry.getResourceRegistry();
@@ -152,26 +161,112 @@ public class RegistryEntry {
 		return false;
 	}
 
-	@Override
-	public boolean equals(Object o) {
-		if (this == o) {
-			return true;
-		}
-		if (o == null || !(o instanceof RegistryEntry)) {
-			return false;
-		}
-		RegistryEntry that = (RegistryEntry) o;
-		return Objects.equals(resourceInformation, that.resourceInformation) && // NOSONAR
-				Objects.equals(repositoryInformation, that.repositoryInformation) && Objects.equals(resourceEntry, that.resourceEntry) && Objects.equals(moduleRegistry, that.moduleRegistry)
-				&& Objects.equals(relationshipEntries, that.relationshipEntries) && Objects.equals(parentRegistryEntry, that.parentRegistryEntry);
-	}
 
-	@Override
-	public int hashCode() {
-		return Objects.hash(repositoryInformation, resourceInformation, resourceEntry, relationshipEntries, moduleRegistry, parentRegistryEntry);
-	}
-
+	/**
+	 * @return we may or may should not have a public facing ResourceRepositoryAdapter
+	 */
+	@Deprecated
 	public ResourceRepositoryAdapter getResourceRepository() {
 		return getResourceRepository(null);
+	}
+
+	/**
+	 * @return {@link ResourceRepositoryV2} facade to access the repository. Note that this is not the original
+	 * {@link ResourceRepositoryV2}
+	 * implementation backing the repository, but a facade that will also invoke all filters, decorators, etc. The actual
+	 * repository may or may not be implemented with {@link ResourceRepositoryV2}.
+	 * <p>
+	 * Note that currently there is not (yet) any inclusion mechanism supported. This is currently done on a
+	 * resource/document level only. But there might be some benefit to also be able to do it here on some occasions.
+	 */
+	public <T, I extends Serializable> ResourceRepositoryV2<T, I> getResourceRepositoryFacade() {
+		return (ResourceRepositoryV2<T, I>) new ResourceRepositoryFacade();
+	}
+
+	public Map<ResourceField, ResponseRelationshipEntry> getRelationshipEntries() {
+		return relationshipEntries;
+	}
+
+	class ResourceRepositoryFacade implements ResourceRepositoryV2<Object, Serializable> {
+
+		@Override
+		public Class getResourceClass() {
+			return getResourceInformation().getResourceClass();
+		}
+
+		@Override
+		public Object findOne(Serializable id, QuerySpec querySpec) {
+			ResourceRepositoryAdapter adapter = getResourceRepository();
+			return toResource(adapter.findOne(id, toAdapter(querySpec)));
+		}
+
+
+		@Override
+		public ResourceList findAll(QuerySpec querySpec) {
+			ResourceRepositoryAdapter adapter = getResourceRepository();
+			return (ResourceList) toResources(adapter.findAll(toAdapter(querySpec)));
+		}
+
+		@Override
+		public ResourceList findAll(Iterable ids, QuerySpec querySpec) {
+			ResourceRepositoryAdapter adapter = getResourceRepository();
+			return (ResourceList) toResources(adapter.findAll(ids, toAdapter(querySpec)));
+		}
+
+		@Override
+		public Object save(Object resource) {
+			ResourceRepositoryAdapter adapter = getResourceRepository();
+			return toResource(adapter.update(resource, createEmptyAdapter()));
+		}
+
+		@Override
+		public Object create(Object resource) {
+			ResourceRepositoryAdapter adapter = getResourceRepository();
+			return toResource(adapter.create(resource, createEmptyAdapter()));
+		}
+
+		@Override
+		public void delete(Serializable id) {
+			ResourceRepositoryAdapter adapter = getResourceRepository();
+			toResource(adapter.delete(id, createEmptyAdapter()));
+		}
+
+		private QueryAdapter createEmptyAdapter() {
+			return toAdapter(new QuerySpec(getResourceClass()));
+		}
+
+		private QueryAdapter toAdapter(QuerySpec querySpec) {
+			return new QuerySpecAdapter(querySpec, moduleRegistry.getResourceRegistry());
+		}
+	}
+
+
+	private ResourceList toResources(JsonApiResponse response) {
+		Collection elements = (Collection) toResource(response);
+
+		DefaultResourceList result = new DefaultResourceList();
+		result.addAll(elements);
+		result.setMeta(response.getMetaInformation());
+		result.setLinks(response.getLinksInformation());
+		return result;
+	}
+
+	private Object toResource(JsonApiResponse response) {
+		if (response.getErrors() != null && response.getErrors().iterator().hasNext()) {
+
+			List<ErrorData> errorList = new ArrayList<>();
+			response.getErrors().forEach(it -> errorList.add(it));
+			Optional<Integer> errorCode = errorList.stream().filter(it -> it.getStatus() != null)
+					.map(it -> Integer.parseInt(it.getStatus()))
+					.collect(Collectors.maxBy(Integer::compare));
+
+			ErrorResponse errorResponse = new ErrorResponse(errorList, errorCode.get());
+
+			ExceptionMapperRegistry exceptionMapperRegistry = moduleRegistry.getExceptionMapperRegistry();
+			ExceptionMapper<Throwable> exceptionMapper = exceptionMapperRegistry.findMapperFor(errorResponse).get();
+			return exceptionMapper.fromErrorResponse(errorResponse);
+		}
+		return response.getEntity();
+
 	}
 }

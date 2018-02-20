@@ -11,6 +11,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 import io.crnk.activiti.resource.ExecutionResource;
 import io.crnk.activiti.resource.FormResource;
@@ -96,7 +97,7 @@ public class ActivitiResourceMapper {
 	private void copyInternal(Object resource, String prefix, Map<String, Object> variables, boolean toResource,
 			Optional<Object> variableHolder) {
 		Package activitiPackage = ExecutionResource.class.getPackage();
-		BeanInformation beanInformation = new BeanInformation(resource.getClass());
+		BeanInformation beanInformation = BeanInformation.get(resource.getClass());
 		for (String attributeName : beanInformation.getAttributeNames()) {
 			BeanAttributeInformation attribute = beanInformation.getAttribute(attributeName);
 			if (attribute.getAnnotation(JsonApiRelation.class).isPresent() || IGNORED_ATTRIBUTES.contains(attributeName)) {
@@ -119,7 +120,7 @@ public class ActivitiResourceMapper {
 		PreconditionUtil.assertNotNull("cannot process nested holder structures", activitiBean);
 		// map fields
 		if (activitiBean.isPresent()) {
-			BeanInformation activitiBeanInformation = new BeanInformation(activitiBean.get().getClass());
+			BeanInformation activitiBeanInformation = BeanInformation.get(activitiBean.get().getClass());
 			if (toResource) {
 				Object value = PropertyUtils.getProperty(activitiBean.get(), attributeName);
 				PropertyUtils.setProperty(resource, attributeName, mapValue(value));
@@ -201,7 +202,7 @@ public class ActivitiResourceMapper {
 
 	private boolean isPrimitive(Class clazz) {
 		return clazz == String.class || ClassUtils.isPrimitiveOrWrapper(clazz) || LocalDate.class.getPackage().equals(clazz
-				.getPackage()) || clazz.isEnum();
+				.getPackage()) || clazz.isEnum() || clazz == UUID.class;
 	}
 
 }

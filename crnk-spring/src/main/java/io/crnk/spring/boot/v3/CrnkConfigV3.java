@@ -1,5 +1,7 @@
 package io.crnk.spring.boot.v3;
 
+import javax.servlet.Filter;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.crnk.core.boot.CrnkBoot;
 import io.crnk.core.boot.CrnkProperties;
@@ -7,23 +9,29 @@ import io.crnk.core.engine.properties.PropertiesProvider;
 import io.crnk.core.engine.registry.ResourceRegistry;
 import io.crnk.core.engine.url.ConstantServiceUrlProvider;
 import io.crnk.core.module.ModuleRegistry;
+import io.crnk.core.module.discovery.ServiceDiscovery;
+import io.crnk.core.queryspec.DefaultQuerySpecDeserializer;
+import io.crnk.core.queryspec.QuerySpecDeserializer;
+import io.crnk.servlet.internal.ServletModule;
 import io.crnk.spring.SpringCrnkFilter;
 import io.crnk.spring.boot.CrnkSpringBootProperties;
 import io.crnk.spring.internal.SpringServiceDiscovery;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-import javax.servlet.Filter;
-
 /**
  * Current crnk configuration with JSON API compliance, QuerySpec and module support.
  * Note that there is no support for QueryParams is this version due to the lack of JSON API compatibility.
  */
 @Configuration
+@ConditionalOnProperty(prefix = "crnk", name = "enabled", havingValue = "true", matchIfMissing = true)
+@ConditionalOnMissingBean(CrnkBoot.class)
 @EnableConfigurationProperties(CrnkSpringBootProperties.class)
 public class CrnkConfigV3 implements ApplicationContextAware {
 
@@ -40,12 +48,14 @@ public class CrnkConfigV3 implements ApplicationContextAware {
 	}
 
 	@Bean
+	@ConditionalOnMissingBean(ServiceDiscovery.class)
 	public SpringServiceDiscovery discovery() {
 		return new SpringServiceDiscovery();
 	}
 
 	@Bean
-	public CrnkBoot crnkBoot(SpringServiceDiscovery serviceDiscovery) {
+	@ConditionalOnMissingBean(CrnkBoot.class)
+	public CrnkBoot crnkBoot(ServiceDiscovery serviceDiscovery) {
 		CrnkBoot boot = new CrnkBoot();
 		boot.setObjectMapper(objectMapper);
 
@@ -78,13 +88,20 @@ public class CrnkConfigV3 implements ApplicationContextAware {
 			}
 		});
 		boot.setAllowUnknownAttributes();
+		boot.addModule(new ServletModule(boot.getModuleRegistry().getHttpRequestContextProvider()));
 		boot.boot();
 		return boot;
 	}
 
 	@Bean
-	public Filter springBootSampleCrnkFilter(CrnkBoot boot) {
-		return new SpringCrnkFilter(boot);
+	@ConditionalOnMissingBean(QuerySpecDeserializer.class)
+	public QuerySpecDeserializer querySpecDeserializer() {
+		return new DefaultQuerySpecDeserializer();
+	}
+
+	@Bean
+	public SpringCrnkFilter springBootSampleCrnkFilter(CrnkBoot boot) {
+		return new SpringCrnkFilter(boot, properties);
 	}
 
 	@Bean

@@ -7,7 +7,7 @@ import javax.ws.rs.core.MultivaluedMap;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.crnk.client.action.JerseyActionStubFactory;
-import io.crnk.client.module.TestModule;
+import io.crnk.client.module.ClientTestModule;
 import io.crnk.core.boot.CrnkProperties;
 import io.crnk.core.queryspec.DefaultQuerySpecDeserializer;
 import io.crnk.legacy.locator.SampleJsonServiceLocator;
@@ -38,26 +38,34 @@ public abstract class AbstractClientTest extends JerseyTestBase {
 
 	@Before
 	public void setup() {
-		client = new CrnkClient(getBaseUri().toString());
-		client.addModule(new TestModule());
-		// tag::jerseyStubFactory[]
-		client.setActionStubFactory(JerseyActionStubFactory.newInstance());
-		// end::jerseyStubFactory[]
-		client.getHttpAdapter().setReceiveTimeout(10000000, TimeUnit.MILLISECONDS);
+		createClient();
 		setupClient(client);
 
-		TaskRepository.clear();
-		ProjectRepository.clear();
-		TaskToProjectRepository.clear();
-		ProjectToTaskRepository.clear();
-		ScheduleRepositoryImpl.clear();
+		cleanRepositories();
 
 		Assert.assertNotNull(client.getActionStubFactory());
 		Assert.assertNotNull(client.getModuleRegistry());
 	}
 
+	protected void createClient() {
+		client = new CrnkClient(getBaseUri().toString());
+		client.addModule(new ClientTestModule());
+		// tag::jerseyStubFactory[]
+		client.setActionStubFactory(JerseyActionStubFactory.newInstance());
+		// end::jerseyStubFactory[]
+		client.getHttpAdapter().setReceiveTimeout(10000000, TimeUnit.MILLISECONDS);
+	}
+
 	protected void setupClient(CrnkClient client) {
 
+	}
+
+	protected void cleanRepositories() {
+		TaskRepository.clear();
+		ProjectRepository.clear();
+		TaskToProjectRepository.clear();
+		ProjectToTaskRepository.clear();
+		ScheduleRepositoryImpl.clear();
 	}
 
 	@Override
@@ -113,12 +121,11 @@ public abstract class AbstractClientTest extends JerseyTestBase {
 		private CrnkTestFeature feature;
 
 		public TestApplication(boolean querySpec) {
-			this(querySpec, false);
+			this(querySpec, false, false);
 		}
 
-		public TestApplication(boolean querySpec, boolean jsonApiFilter) {
-			property(CrnkProperties.RESOURCE_SEARCH_PACKAGE, "io.crnk.test.mock");
-
+		public TestApplication(boolean querySpec, boolean jsonApiFilter, boolean serializeLinksAsObjects) {
+			property(CrnkProperties.SERIALIZE_LINKS_AS_OBJECTS, Boolean.toString(serializeLinksAsObjects));
 			if (!querySpec) {
 				feature = new CrnkTestFeature(new ObjectMapper(), new QueryParamsBuilder(new DefaultQueryParamsParser()),
 						new SampleJsonServiceLocator());
@@ -128,7 +135,8 @@ public abstract class AbstractClientTest extends JerseyTestBase {
 						new SampleJsonServiceLocator());
 			}
 
-			feature.addModule(new TestModule());
+			feature.addModule(new io.crnk.test.mock.TestModule());
+			feature.addModule(new ClientTestModule());
 
 			if (jsonApiFilter) {
 				register(new JsonApiResponseFilter(feature));

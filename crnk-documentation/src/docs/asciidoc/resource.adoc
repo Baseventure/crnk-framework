@@ -1,10 +1,12 @@
 
+anchor:resource[]
+
 # Resource
 
 A resource as defined by JSON API holds the actual data. The engine part of `crnk-core` is agnostic to how such resources are
-actually
-implemented (see the architecture and modules chapters). This chapter gives information of the most common way using
-annotations provided by `crnk-core`.
+actually implemented (see the <<architecture>> and <<modules>> chapters). This chapter describes the most common
+way Java Beans and annotations. See <<runtimerepository,here>> for more information how setup resources and repositories
+programmatically at runtime.
 
 
 ## JsonApiResource
@@ -40,6 +42,7 @@ The example below shows a sample class which contains a definition of a field wh
   }
 ----
 
+anchor:jsonApiRelation[]
 
 ## JsonApiRelation
 
@@ -78,9 +81,110 @@ returns related resources with the returned resources. Or Crnk can take-over tha
 work by doing nested calls to the corresponding `RelationshipRepositoryV2` implementations. The behavior
 is controlled by the optional `lookUp` parameter. There are three options:
 
-- 'NONE' makes the requested repository responsible for returning related resources. This is the default.
-- 'AUTOMATICALLY_WHEN_NULL' will let Crnk lookup related resources if not already done by the requested repository.
-- 'AUTOMATICALLY_ALWAYS' will force Crnk to always lookup related resource regardless whether it is already done by the requested repository.
+- `NONE` makes the requested repository responsible for returning related resources. This is the default.
+- `AUTOMATICALLY_WHEN_NULL` will let Crnk lookup related resources if not already done by the requested repository.
+- `AUTOMATICALLY_ALWAYS` will force Crnk to always lookup related resource regardless whether it is already done by the requested repository.
+
+There are many different ways how a relationship may end-up being implemented. In the best case, no implementation is necessary
+at all and requests can be dispatches to one of the two related resource repositories. The `repositoryBehavior` allows
+to configure behavior:
+
+- `DEFAULT` makes use of `IMPLICIT_FROM_OWNER` if a relationship also makes use of `@JsonApiRelationId` (see below) or
+  `lookUp=NONE` (see above). In any other case it expects a custom implementation.
+- `CUSTOM` expects a custom implementation.
+- `FORWARD_OWNER` forward any relationship request to the owning resource repository, the repository that defines the
+  requested relationship field. GET requests will fetch the owning resources and grab the related resources from there (with the
+  appropriate inclusion parameter). This assumes that the owning resource properties hold the related resources
+  (or at least there IDs in case of `JsonApiRelationId`, see below).
+  POST, PATCH, DELETE requests will update the properties of the owning resource accordingly and invoke a save operation on the
+  owning resource repository. An implementation is provided by `ImplicitOwnerBasedRelationshipRepository`.
+- `FORWARD_GET_OPPOSITE_SET_OWNER` works like `FORWARD_OWNER` for PATCH, POST, DELETE methods. In contrast,
+  GET requests are forwarded to the opposite resource repository. For example,
+	  if there is a relationship between `Task` and `Project` with the `project` and `tasks` relationship fields. To get all tasks of
+	  a project, the task repository will be queried with a `project.id=<projectId>` filter parameter.
+	  Relational database are one typical example where this pattern fits nicely. In contract to `IMPLICIT_FROM_OWNER` only a
+	  single resource repository is involved with a slightly more complex filter parameter, giving performance benefits.
+	  An implementation is provided by `RelationshipRepositoryBase`.
+- `FORWARD_OPPOSITE` the opposite to `FORWARD_OWNER`. Querying works like `IMPLICIT_GET_OPPOSITE_MODIFY_OWNER`.
+
+The forwarding behaviors are implemented by `ForwardingRelationshipRepository`.
+
+IMPORTANT: It likely takes a moment to familiarize oneself with all configuration options of `@JsonApiRelation` and the
+  subsequent `@JsonApiRelationId`. But at the same time it is one area where a native resource-oriented REST library like Crnk
+  can provide significant benefit and reduce manual work compared to more classical REST libraries like Spring MVC or JAX-RS.
+
+
+anchor:jsonApiRelationId[]
+
+## JsonApiRelationId
+
+Fields annotated with `@JsonApiRelation` hold fully-realized related resources. There are situations
+where the id of a related resource is available for free or can be obtained much more cheaply then
+fetching the entire related resource. In this case resources can make use of fields annotated with
+`@JsonApiRelationId`. The complement `@JsonApiRelation` fields by holding there ID only.
+An example looks like:
+
+[source]
+----
+@JsonApiResource(type = "schedules")
+public class Schedule {
+  ...
+
+  @JsonApiRelationId
+  private Long projectId;
+
+  @JsonApiRelation
+  private Project project;
+
+  public Long getProjectId() {
+    return projectId;
+  }
+
+  public void setProjectId(Long projectId) {
+    this.projectId = projectId;
+    this.project = null;
+  }
+
+  public Project getProject() {
+    return project;
+  }
+
+  public void setProject(Project project) {
+    this.projectId = project != null ? project.getId() : null;
+    this.project = project;
+  }
+}
+----
+
+Notice that:
+- `Schedule` resource holds both a `project` and `projectId` field that point to the same related resource.
+- setters must set both properties to make sure they stay in sync. If only the ID is set, the object must be nulled.
+- `propertyId` will never show in requests and responses. It can be considered to be `transient`.
+
+By default, the naming convention for `@JsonApiRelationId` field is to end with a `Id` or `Ids` suffix. Crnk will
+the pair those two objects automatically. Trailing `s` are ignored for multi-valued fields, meaning that `projectIds` matches with
+ `projects`. But it is also possible to specify a custom name, for example:
+
+[source]
+----
+@JsonApiRelationId
+private Long projectFk;
+
+@JsonApiRelation(idField = "projectFk")
+private Project project;
+----
+
+If a `@JsonApiRelationId` field cannot be matched to a `@JsonApiRelation` field, an exception will be thrown.
+
+`@JsonApiRelationId` fields are used for:
+
+- `GET` requests to fill-in the `data` section of a relationship.
+- `POST` and `PATCH` requests to fill-in the new value without having to fetch and set the entire related resource.
+
+*Further (substantial) benefit for `@JsonApiRelationId` fields is that no `RelationshipRepository`
+must be implemented*. Instead Crnk will automatically dispatch relationship requests to the owning and
+opposite `ResourceRepository`. This allows to focus on the development of `ResourceRepository`.
+See <<relationshipRepository,RelationshipRepository>> for more information.
 
 
 
@@ -146,6 +250,27 @@ See http://jsonapi.org/format/#document-links for more information about linking
 		}
 	}
 ----
+
+By default links are serialized as:
+
+----
+"links": {
+  "self": "http://example.com/posts"
+}
+----
+
+With `crnk.config.serialize.object.links=true` links get serialized as:
+
+----
+"links": {
+  "self": {
+    "href": "http://example.com/posts",
+  }
+}
+----
+
+
+
 
 anchor:jackson_annotations[]
 

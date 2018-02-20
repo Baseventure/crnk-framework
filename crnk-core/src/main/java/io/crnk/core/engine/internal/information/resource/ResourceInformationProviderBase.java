@@ -3,17 +3,33 @@ package io.crnk.core.engine.internal.information.resource;
 import io.crnk.core.engine.information.InformationBuilder;
 import io.crnk.core.engine.information.bean.BeanAttributeInformation;
 import io.crnk.core.engine.information.bean.BeanInformation;
-import io.crnk.core.engine.information.resource.*;
+import io.crnk.core.engine.information.resource.ResourceField;
+import io.crnk.core.engine.information.resource.ResourceFieldAccess;
+import io.crnk.core.engine.information.resource.ResourceFieldInformationProvider;
+import io.crnk.core.engine.information.resource.ResourceFieldType;
+import io.crnk.core.engine.information.resource.ResourceInformationProvider;
+import io.crnk.core.engine.information.resource.ResourceInformationProviderContext;
 import io.crnk.core.engine.internal.document.mapper.IncludeLookupUtil;
 import io.crnk.core.engine.internal.utils.ClassUtils;
 import io.crnk.core.engine.properties.PropertiesProvider;
+import io.crnk.core.exception.InvalidResourceException;
+import io.crnk.core.resource.annotations.JsonApiRelation;
+import io.crnk.core.resource.annotations.JsonApiRelationId;
 import io.crnk.core.resource.annotations.LookupIncludeBehavior;
+import io.crnk.core.resource.annotations.RelationshipRepositoryBehavior;
 import io.crnk.core.resource.annotations.SerializeType;
 import io.crnk.core.utils.Optional;
 
-import java.lang.reflect.*;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 
 public abstract class ResourceInformationProviderBase implements ResourceInformationProvider {
@@ -25,9 +41,8 @@ public abstract class ResourceInformationProviderBase implements ResourceInforma
 	private LookupIncludeBehavior globalLookupIncludeBehavior;
 
 	public ResourceInformationProviderBase(
-		PropertiesProvider propertiesProvider,
-		List<ResourceFieldInformationProvider> resourceFieldInformationProviders)
-	{
+			PropertiesProvider propertiesProvider,
+			List<ResourceFieldInformationProvider> resourceFieldInformationProviders) {
 		this.resourceFieldInformationProviders = resourceFieldInformationProviders;
 		this.globalLookupIncludeBehavior = IncludeLookupUtil.getGlolbalLookupIncludeBehavior(propertiesProvider);
 	}
@@ -42,22 +57,41 @@ public abstract class ResourceInformationProviderBase implements ResourceInforma
 	}
 
 	protected List<ResourceField> getResourceFields(Class<?> resourceClass) {
-		BeanInformation beanDesc = new BeanInformation(resourceClass);
+		BeanInformation beanDesc = BeanInformation.get(resourceClass);
 		List<String> attributeNames = beanDesc.getAttributeNames();
 		List<ResourceField> fields = new ArrayList<>();
+		Set<String> relationIdFields = new HashSet<>();
 		for (String attributeName : attributeNames) {
 			BeanAttributeInformation attributeDesc = beanDesc.getAttribute(attributeName);
 			if (!isIgnored(attributeDesc)) {
 				InformationBuilder informationBuilder = context.getInformationBuilder();
 				InformationBuilder.Field fieldBuilder = informationBuilder.createResourceField();
-				buildResourceField(attributeDesc, fieldBuilder);
+				buildResourceField(beanDesc, attributeDesc, fieldBuilder);
 				fields.add(fieldBuilder.build());
 			}
+			else if (attributeDesc.getAnnotation(JsonApiRelationId.class).isPresent()) {
+				relationIdFields.add(attributeDesc.getName());
+			}
 		}
+		verifyRelationIdFields(resourceClass, relationIdFields, fields);
 		return fields;
 	}
 
-	protected void buildResourceField(BeanAttributeInformation attributeDesc, InformationBuilder.Field fieldBuilder) {
+	private void verifyRelationIdFields(Class resourceClass, Set<String> relationIdFields, List<ResourceField> fields) {
+		for (ResourceField field : fields) {
+			if (field.getResourceFieldType() == ResourceFieldType.RELATIONSHIP && field.hasIdField()) {
+				relationIdFields.remove(field.getIdName());
+			}
+		}
+
+		if (!relationIdFields.isEmpty()) {
+			throw new InvalidResourceException(resourceClass.getName() + " annotated " + relationIdFields + " with "
+					+ "@JsonApiRelationId but no matching relationship found");
+		}
+	}
+
+	protected void buildResourceField(BeanInformation beanDesc, BeanAttributeInformation attributeDesc, InformationBuilder.Field
+			fieldBuilder) {
 		fieldBuilder.underlyingName(attributeDesc.getName());
 		fieldBuilder.jsonName(getJsonName(attributeDesc));
 
@@ -66,12 +100,14 @@ public abstract class ResourceInformationProviderBase implements ResourceInforma
 		fieldBuilder.access(getAccess(attributeDesc, fieldType));
 		fieldBuilder.serializeType(getSerializeType(attributeDesc, fieldType));
 		fieldBuilder.lookupIncludeBehavior(getLookupIncludeBehavior(attributeDesc));
+		fieldBuilder.relationshipRepositoryBehavior(getRelationshipRepositoryBehavior(attributeDesc));
 
 		Type genericType;
 		if (useFieldType(attributeDesc)) {
 			fieldBuilder.type(attributeDesc.getField().getType());
 			genericType = attributeDesc.getField().getGenericType();
-		} else {
+		}
+		else {
 			fieldBuilder.type(attributeDesc.getGetter().getReturnType());
 			genericType = attributeDesc.getGetter().getGenericReturnType();
 		}
@@ -79,7 +115,46 @@ public abstract class ResourceInformationProviderBase implements ResourceInforma
 		if (fieldType == ResourceFieldType.RELATIONSHIP) {
 			fieldBuilder.oppositeResourceType(getResourceType(genericType, context));
 			fieldBuilder.oppositeName(getOppositeName(attributeDesc));
+
+			Optional<JsonApiRelation> relationAnnotation = attributeDesc.getAnnotation(JsonApiRelation.class);
+			if (relationAnnotation.isPresent()) {
+				boolean multiValued = Collection.class.isAssignableFrom(attributeDesc.getImplementationClass());
+				String suffix = multiValued ? "Ids" : "Id";
+				String idFieldName;
+				if (relationAnnotation.get().idField().length() > 0) {
+					idFieldName = relationAnnotation.get().idField();
+				}
+				else {
+					idFieldName = attributeDesc.getName() + suffix;
+				}
+				BeanAttributeInformation idAttribute = beanDesc.getAttribute(idFieldName);
+				if (idAttribute == null && multiValued && attributeDesc.getName().endsWith("s")) {
+					// also try to correlate by removing ending s
+					String idFieldNameTemp = attributeDesc.getName().substring(0, attributeDesc.getName().length() - 1) + suffix;
+					BeanAttributeInformation idAttributeTemp = beanDesc.getAttribute(idFieldNameTemp);
+					// make sure there are no custom get-named methods
+					if (idAttributeTemp != null && attributeDesc.getGetter() != null && idAttributeTemp.getGetter().getReturnType().equals(attributeDesc.getGetter().getReturnType())) {
+						idFieldName = idFieldNameTemp;
+						idAttribute = idAttributeTemp;
+					}
+				}
+				if (idAttribute != null) {
+					fieldBuilder.idName(idFieldName);
+					fieldBuilder.idType(idAttribute.getImplementationClass());
+				}
+			}
 		}
+	}
+
+	protected RelationshipRepositoryBehavior getRelationshipRepositoryBehavior(BeanAttributeInformation attributeDesc) {
+		for (ResourceFieldInformationProvider fieldInformationProvider : resourceFieldInformationProviders) {
+			Optional<RelationshipRepositoryBehavior> behavior =
+					fieldInformationProvider.getRelationshipRepositoryBehavior(attributeDesc);
+			if (behavior.isPresent()) {
+				return behavior.get();
+			}
+		}
+		return RelationshipRepositoryBehavior.DEFAULT;
 	}
 
 	private static String getResourceType(Type genericType, ResourceInformationProviderContext context) {
@@ -116,7 +191,8 @@ public abstract class ResourceInformationProviderBase implements ResourceInforma
 		LookupIncludeBehavior behavior = LookupIncludeBehavior.DEFAULT;
 
 		for (ResourceFieldInformationProvider fieldInformationProvider : resourceFieldInformationProviders) {
-			Optional<LookupIncludeBehavior> lookupIncludeBehavior = fieldInformationProvider.getLookupIncludeBehavior(attributeDesc);
+			Optional<LookupIncludeBehavior> lookupIncludeBehavior =
+					fieldInformationProvider.getLookupIncludeBehavior(attributeDesc);
 			if (lookupIncludeBehavior.isPresent()) {
 				behavior = lookupIncludeBehavior.get();
 				break;

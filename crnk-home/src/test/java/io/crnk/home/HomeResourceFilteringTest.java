@@ -10,21 +10,20 @@ import io.crnk.core.engine.information.resource.ResourceInformation;
 import io.crnk.core.engine.internal.http.HttpRequestProcessorImpl;
 import io.crnk.core.engine.url.ConstantServiceUrlProvider;
 import io.crnk.core.module.SimpleModule;
-import io.crnk.core.module.discovery.ReflectionsServiceDiscovery;
-import io.crnk.legacy.locator.SampleJsonServiceLocator;
+import io.crnk.test.mock.TestModule;
+import java.io.IOException;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
-import java.io.IOException;
-
 public class HomeResourceFilteringTest {
 
 	private CrnkBoot boot;
 
 	private HomeModule module;
+
 	private ResourceFilter filter;
 
 	@Before
@@ -36,9 +35,8 @@ public class HomeResourceFilteringTest {
 		this.module = Mockito.spy(HomeModule.create());
 		boot = new CrnkBoot();
 		boot.addModule(module);
+		boot.addModule(new TestModule());
 		boot.setServiceUrlProvider(new ConstantServiceUrlProvider("http://localhost"));
-		boot.setServiceDiscovery(new ReflectionsServiceDiscovery("io.crnk.test.mock", new SampleJsonServiceLocator
-				()));
 		boot.addModule(filterModule);
 		boot.boot();
 	}
@@ -77,12 +75,13 @@ public class HomeResourceFilteringTest {
 		String json = new String(responseCaptor.getValue());
 		JsonNode response = boot.getObjectMapper().reader().readTree(json);
 
-		JsonNode resourcesNode = response.get("resources");
-		JsonNode tasksNode = resourcesNode.get("tag:tasks");
+		JsonNode resourcesNode = response.get("links");
+		JsonNode tasksNode = resourcesNode.get("tasks");
 		if (filtered) {
 			Assert.assertNull(tasksNode);
-		} else {
-			Assert.assertEquals("/tasks/", tasksNode.get("href").asText());
+		}
+		else {
+			Assert.assertEquals("http://localhost/tasks", tasksNode.asText());
 		}
 	}
 }

@@ -3,16 +3,28 @@ package io.crnk.core.engine.information.resource;
 import com.fasterxml.jackson.annotation.JsonAnyGetter;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import io.crnk.core.engine.document.Document;
+import io.crnk.core.engine.document.Resource;
+import io.crnk.core.engine.document.ResourceIdentifier;
 import io.crnk.core.engine.internal.information.resource.DefaultResourceInstanceBuilder;
 import io.crnk.core.engine.internal.utils.ClassUtils;
+import io.crnk.core.engine.parser.StringMapper;
 import io.crnk.core.engine.parser.TypeParser;
-import io.crnk.core.exception.*;
+import io.crnk.core.exception.InvalidResourceException;
+import io.crnk.core.exception.MultipleJsonApiLinksInformationException;
+import io.crnk.core.exception.MultipleJsonApiMetaInformationException;
+import io.crnk.core.exception.ResourceDuplicateIdException;
+import io.crnk.core.exception.ResourceException;
 import io.crnk.core.resource.annotations.JsonApiResource;
-
 import java.io.Serializable;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
 /**
  * Holds information about the type of the resource.
@@ -76,14 +88,29 @@ public class ResourceInformation {
 
 	private AnyResourceFieldAccessor anyFieldAccessor;
 
+	private ResourceValidator validator;
+
+	private StringMapper idStringMapper = new StringMapper() {
+		@Override
+		public String toString(Object input) {
+			return input.toString();
+		}
+
+		@Override
+		public Object parse(String input) {
+			Class idType = getIdField().getType();
+			return parser.parse(input, idType);
+		}
+	};
+
 	public ResourceInformation(TypeParser parser, Class<?> resourceClass, String resourceType, String superResourceType,
-							   List<ResourceField> fields) {
+			List<ResourceField> fields) {
 		this(parser, resourceClass, resourceType, superResourceType, null, fields);
 	}
 
-	@SuppressWarnings({"rawtypes", "unchecked"})
+	@SuppressWarnings({ "rawtypes", "unchecked" })
 	public ResourceInformation(TypeParser parser, Class<?> resourceClass, String resourceType, String superResourceType,
-							   ResourceInstanceBuilder<?> instanceBuilder, List<ResourceField> fields) {
+			ResourceInstanceBuilder<?> instanceBuilder, List<ResourceField> fields) {
 		this.parser = parser;
 		this.resourceClass = resourceClass;
 		this.resourceType = resourceType;
@@ -97,6 +124,25 @@ public class ResourceInformation {
 		}
 
 		initAny();
+	}
+
+	@Deprecated
+	public void setValidator(ResourceValidator validator) {
+		this.validator = validator;
+	}
+
+	@Deprecated
+	public ResourceValidator getValidator() {
+		return validator;
+	}
+
+	@Deprecated
+	public void setIdStringMapper(StringMapper idStringMapper) {
+		this.idStringMapper = idStringMapper;
+	}
+
+	public StringMapper getIdStringMapper() {
+		return idStringMapper;
 	}
 
 	public AnyResourceFieldAccessor getAnyFieldAccessor() {
@@ -120,7 +166,8 @@ public class ResourceInformation {
 				public Object getValue(Object resource, String name) {
 					try {
 						return jsonAnyGetter.invoke(resource, name);
-					} catch (IllegalAccessException | InvocationTargetException e) {
+					}
+					catch (IllegalAccessException | InvocationTargetException e) {
 						throw new ResourceException(
 								String.format("Exception while reading %s.%s due to %s", resource, name, e.getMessage()), e);
 					}
@@ -130,9 +177,11 @@ public class ResourceInformation {
 				public void setValue(Object resource, String name, Object fieldValue) {
 					try {
 						jsonAnySetter.invoke(resource, name, fieldValue);
-					} catch (IllegalAccessException | InvocationTargetException e) {
+					}
+					catch (IllegalAccessException | InvocationTargetException e) {
 						throw new ResourceException(
-								String.format("Exception while writting %s.%s=%s due to %s", resource, name, fieldValue, e.getMessage()), e);
+								String.format("Exception while writting %s.%s=%s due to %s", resource, name, fieldValue,
+										e.getMessage()), e);
 					}
 				}
 			};
@@ -143,8 +192,6 @@ public class ResourceInformation {
 	 * The resource has to have both method annotated with {@link JsonAnySetter} and {@link JsonAnyGetter} to allow
 	 * proper handling.
 	 *
-	 * @param jsonAnyGetter
-	 * @param jsonAnySetter
 	 * @return <i>true</i> if resource definition is incomplete, <i>false</i> otherwise
 	 */
 	private static boolean absentAnySetter(Method jsonAnyGetter, Method jsonAnySetter) {
@@ -172,7 +219,8 @@ public class ResourceInformation {
 				fieldByJsonName.put(resourceField.getJsonName(), resourceField);
 				fieldByUnderlyingName.put(resourceField.getUnderlyingName(), resourceField);
 			}
-		} else {
+		}
+		else {
 			this.relationshipFields = Collections.emptyList();
 			this.attributeFields = Collections.emptyList();
 			this.metaField = null;
@@ -197,7 +245,8 @@ public class ResourceInformation {
 
 		if (metaFields.isEmpty()) {
 			return null;
-		} else if (metaFields.size() > 1) {
+		}
+		else if (metaFields.size() > 1) {
 			throw new MultipleJsonApiMetaInformationException(resourceClass.getCanonicalName());
 		}
 		return metaFields.get(0);
@@ -213,7 +262,8 @@ public class ResourceInformation {
 
 		if (linksFields.isEmpty()) {
 			return null;
-		} else if (linksFields.size() > 1) {
+		}
+		else if (linksFields.size() > 1) {
 			throw new MultipleJsonApiLinksInformationException(resourceClass.getCanonicalName());
 		}
 		return linksFields.get(0);
@@ -302,7 +352,35 @@ public class ResourceInformation {
 		if (id == null) {
 			return null;
 		}
-		return id.toString();
+		return idStringMapper.toString(id);
+	}
+
+	/**
+	 * @param resourceOrId resource or id object
+	 * @return ResourceIdentifier of that resource
+	 */
+	public ResourceIdentifier toResourceIdentifier(Object resourceOrId) {
+		if (resourceOrId == null) {
+			return null;
+		}
+		if (resourceOrId instanceof Resource) {
+			return ((Resource) resourceOrId).toIdentifier();
+		}
+		if (resourceClass.isInstance(resourceOrId)) {
+			resourceOrId = getId(resourceOrId);
+		}
+		if (resourceOrId instanceof ResourceIdentifier) {
+			return (ResourceIdentifier) resourceOrId;
+		}
+		String strId;
+		if (resourceOrId instanceof String) {
+			strId = (String) resourceOrId;
+		}
+		else {
+			strId = toIdString(resourceOrId);
+		}
+		return new ResourceIdentifier(strId, getResourceType());
+
 	}
 
 	/**
@@ -311,10 +389,9 @@ public class ResourceInformation {
 	 * @param id stringified id
 	 * @return id
 	 */
-	@SuppressWarnings({"unchecked", "rawtypes"})
+	@SuppressWarnings({ "unchecked", "rawtypes" })
 	public Serializable parseIdString(String id) {
-		Class idType = getIdField().getType();
-		return (Serializable) parser.parse(id, idType);
+		return (Serializable) idStringMapper.parse(id);
 	}
 
 	/**
@@ -330,6 +407,9 @@ public class ResourceInformation {
 
 	public void verify(Object resource, Document requestDocument) {
 		// nothing to do
+		if (validator != null) {
+			validator.validate(resource, requestDocument);
+		}
 	}
 
 	public List<ResourceField> getFields() {

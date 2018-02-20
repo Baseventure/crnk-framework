@@ -11,10 +11,13 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.crnk.core.boot.CrnkProperties;
 import io.crnk.core.engine.document.ResourceIdentifier;
 import io.crnk.core.engine.information.resource.ResourceField;
 import io.crnk.core.engine.information.resource.ResourceInformation;
 import io.crnk.core.engine.internal.dispatcher.path.PathBuilder;
+import io.crnk.core.engine.internal.utils.SerializerUtil;
+import io.crnk.core.engine.properties.PropertiesProvider;
 import io.crnk.core.engine.query.QueryAdapter;
 import io.crnk.core.engine.registry.RegistryEntry;
 import io.crnk.core.engine.registry.ResourceRegistry;
@@ -35,18 +38,28 @@ public class DocumentMapperUtil {
 
 	private ObjectMapper objectMapper;
 
-	public DocumentMapperUtil(ResourceRegistry resourceRegistry, ObjectMapper objectMapper) {
+	private static SerializerUtil serializerUtil;
+
+	public DocumentMapperUtil(ResourceRegistry resourceRegistry, ObjectMapper objectMapper,
+			PropertiesProvider propertiesProvider) {
 		this.resourceRegistry = resourceRegistry;
 		this.objectMapper = objectMapper;
+
+		boolean serializeLinksAsObjects =
+				Boolean.parseBoolean(propertiesProvider.getProperty(CrnkProperties.SERIALIZE_LINKS_AS_OBJECTS));
+		serializerUtil = new SerializerUtil(serializeLinksAsObjects);
 	}
 
-	protected static List<ResourceField> getRequestedFields(ResourceInformation resourceInformation, QueryAdapter queryAdapter, List<ResourceField> fields, boolean relation) {
+	protected static List<ResourceField> getRequestedFields(ResourceInformation resourceInformation, QueryAdapter queryAdapter,
+			List<ResourceField> fields, boolean relation) {
 		TypedParams<IncludedFieldsParams> includedFieldsSet = queryAdapter != null ? queryAdapter.getIncludedFields() : null;
-		IncludedFieldsParams includedFields = includedFieldsSet != null ? includedFieldsSet.getParams().get(resourceInformation.getResourceType()) : null;
+		IncludedFieldsParams includedFields =
+				includedFieldsSet != null ? includedFieldsSet.getParams().get(resourceInformation.getResourceType()) : null;
 
 		if (noResourceIncludedFieldsSpecified(includedFields)) {
 			return fields;
-		} else {
+		}
+		else {
 			return computeRequestedFields(includedFields, relation, queryAdapter, resourceInformation, fields);
 		}
 	}
@@ -58,7 +71,9 @@ public class DocumentMapperUtil {
 		if (relation) {
 			// for relations consider both "include" and "fields"
 			TypedParams<IncludedRelationsParams> includedRelationsSet = queryAdapter.getIncludedRelations();
-			IncludedRelationsParams includedRelations = includedRelationsSet != null ? includedRelationsSet.getParams().get(resourceInformation.getResourceType()) : null;
+			IncludedRelationsParams includedRelations =
+					includedRelationsSet != null ? includedRelationsSet.getParams().get(resourceInformation.getResourceType())
+							: null;
 			if (includedRelations != null) {
 				includedFieldNames = new HashSet<>(includedFieldNames);
 				for (Inclusion include : includedRelations.getParams()) {
@@ -80,25 +95,29 @@ public class DocumentMapperUtil {
 		return typeIncludedFields == null || typeIncludedFields.getParams().isEmpty();
 	}
 
-	@SuppressWarnings({"unchecked", "rawtypes"})
+	@SuppressWarnings({ "unchecked", "rawtypes" })
 	public static <T> List<T> toList(Object entity) {
 		if (entity instanceof List) {
 			return (List) entity;
-		} else if (entity instanceof Iterable) {
+		}
+		else if (entity instanceof Iterable) {
 			ArrayList<T> result = new ArrayList<>();
 			for (Object element : (Iterable) entity) {
 				result.add((T) element);
 			}
 			return result;
-		} else {
+		}
+		else {
 			return Collections.singletonList((T) entity);
 		}
 	}
 
-	public String getRelationshipLink(ResourceInformation resourceInformation, Object entity, ResourceField field, boolean related) {
+	public String getRelationshipLink(ResourceInformation resourceInformation, Object entity, ResourceField field,
+			boolean related) {
 		String resourceUrl = resourceRegistry.getResourceUrl(resourceInformation);
 		String resourceId = getIdString(entity, resourceInformation);
-		return resourceUrl + "/" + resourceId + (!related ? "/" + PathBuilder.RELATIONSHIP_MARK + "/" : "/") + field.getJsonName();
+		return resourceUrl + "/" + resourceId + (!related ? "/" + PathBuilder.RELATIONSHIP_MARK + "/" : "/") + field
+				.getJsonName();
 	}
 
 	public List<ResourceIdentifier> toResourceIds(Collection<?> entities) {
@@ -115,8 +134,7 @@ public class DocumentMapperUtil {
 		}
 		RegistryEntry entry = resourceRegistry.findEntry(entity.getClass());
 		ResourceInformation resourceInformation = entry.getResourceInformation();
-		String strId = this.getIdString(entity, resourceInformation);
-		return new ResourceIdentifier(strId, resourceInformation.getResourceType());
+		return resourceInformation.toResourceIdentifier(entity);
 	}
 
 	public String getIdString(Object entity, ResourceInformation resourceInformation) {
@@ -125,9 +143,19 @@ public class DocumentMapperUtil {
 		return resourceInformation.toIdString(sourceId);
 	}
 
-	public void setLinks(LinksContainer container, LinksInformation linksInformation) {
+	public void setLinks(LinksContainer container, LinksInformation linksInformation, QueryAdapter queryAdapter) {
 		if (linksInformation != null) {
 			container.setLinks((ObjectNode) objectMapper.valueToTree(linksInformation));
+		}
+		if (queryAdapter != null && queryAdapter.getCompactMode()) {
+			ObjectNode links = container.getLinks();
+			if (links != null) {
+				links.remove("self");
+				if (!links.fieldNames().hasNext()) {
+					container.setLinks(null);
+				}
+			}
+
 		}
 	}
 
@@ -148,6 +176,10 @@ public class DocumentMapperUtil {
 	public String getSelfUrl(ResourceInformation resourceInformation, Object entity) {
 		String resourceUrl = resourceRegistry.getResourceUrl(resourceInformation);
 		return resourceUrl + "/" + getIdString(entity, resourceInformation);
+	}
+
+	public static SerializerUtil getSerializerUtil() {
+		return serializerUtil;
 	}
 
 	@JsonInclude(Include.NON_EMPTY)

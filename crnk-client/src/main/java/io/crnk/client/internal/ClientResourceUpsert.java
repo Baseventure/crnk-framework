@@ -1,5 +1,14 @@
 package io.crnk.client.internal;
 
+import java.io.IOException;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
@@ -17,6 +26,7 @@ import io.crnk.core.engine.information.resource.ResourceInformation;
 import io.crnk.core.engine.internal.dispatcher.controller.ResourceUpsert;
 import io.crnk.core.engine.internal.dispatcher.path.JsonPath;
 import io.crnk.core.engine.internal.document.mapper.DocumentMapper;
+import io.crnk.core.engine.internal.utils.SerializerUtil;
 import io.crnk.core.engine.parser.TypeParser;
 import io.crnk.core.engine.properties.PropertiesProvider;
 import io.crnk.core.engine.query.QueryAdapter;
@@ -24,18 +34,15 @@ import io.crnk.core.engine.registry.RegistryEntry;
 import io.crnk.core.engine.registry.ResourceRegistry;
 import io.crnk.legacy.internal.RepositoryMethodParameterProvider;
 
-import java.io.IOException;
-import java.io.Serializable;
-import java.util.*;
-
 class ClientResourceUpsert extends ResourceUpsert {
 
 	private ClientProxyFactory proxyFactory;
 
 	private Map<String, Object> resourceMap = new HashMap<>();
 
-	public ClientResourceUpsert(ResourceRegistry resourceRegistry, PropertiesProvider propertiesProvider, TypeParser typeParser, ObjectMapper objectMapper, DocumentMapper documentMapper, ClientProxyFactory proxyFactory) {
-		super(resourceRegistry, propertiesProvider, typeParser, objectMapper, documentMapper, (List)Collections.emptyList());
+	public ClientResourceUpsert(ResourceRegistry resourceRegistry, PropertiesProvider propertiesProvider, TypeParser typeParser,
+			ObjectMapper objectMapper, DocumentMapper documentMapper, ClientProxyFactory proxyFactory) {
+		super(resourceRegistry, propertiesProvider, typeParser, objectMapper, documentMapper, (List) Collections.emptyList());
 		this.proxyFactory = proxyFactory;
 	}
 
@@ -68,7 +75,8 @@ class ClientResourceUpsert extends ResourceUpsert {
 	 * Get relations from includes section or create a remote proxy
 	 */
 	@Override
-	protected Object fetchRelatedObject(RegistryEntry entry, Serializable relationId, RepositoryMethodParameterProvider parameterProvider, QueryAdapter queryAdapter) {
+	protected Object fetchRelatedObject(RegistryEntry entry, Serializable relationId,
+			RepositoryMethodParameterProvider parameterProvider, QueryAdapter queryAdapter) {
 
 		String uid = getUID(entry, relationId);
 		Object relatedResource = resourceMap.get(uid);
@@ -78,6 +86,16 @@ class ClientResourceUpsert extends ResourceUpsert {
 		ResourceInformation resourceInformation = entry.getResourceInformation();
 		Class<?> resourceClass = resourceInformation.getResourceClass();
 		return proxyFactory.createResourceProxy(resourceClass, relationId);
+	}
+
+	@Override
+	protected boolean decideSetRelationObjectField(RegistryEntry entry, Serializable relationId, ResourceField field) {
+		return !field.hasIdField() || resourceMap.containsKey(getUID(entry, relationId));
+	}
+
+	@Override
+	protected boolean decideSetRelationObjectsField(ResourceField relationshipField) {
+		return true;
 	}
 
 	public List<Object> allocateResources(List<Resource> resources) {
@@ -110,7 +128,8 @@ class ClientResourceUpsert extends ResourceUpsert {
 			try {
 				Object links = linksMapper.readValue(linksNode);
 				linksField.getAccessor().setValue(instance, links);
-			} catch (IOException e) {
+			}
+			catch (IOException e) {
 				throw new ResponseBodyException("failed to parse links information", e);
 			}
 		}
@@ -127,7 +146,8 @@ class ClientResourceUpsert extends ResourceUpsert {
 			try {
 				Object meta = metaMapper.readValue(metaNode);
 				metaField.getAccessor().setValue(instance, meta);
-			} catch (IOException e) {
+			}
+			catch (IOException e) {
 				throw new ResponseBodyException("failed to parse links information", e);
 			}
 
@@ -142,14 +162,16 @@ class ClientResourceUpsert extends ResourceUpsert {
 	}
 
 	@Override
-	public Response handle(JsonPath jsonPath, QueryAdapter queryAdapter, RepositoryMethodParameterProvider parameterProvider, Document document) {
+	public Response handle(JsonPath jsonPath, QueryAdapter queryAdapter, RepositoryMethodParameterProvider parameterProvider,
+			Document document) {
 		// no in use on client side, consider refactoring ResourceUpsert to
 		// separate from controllers
 		throw new UnsupportedOperationException();
 	}
 
 	@Override
-	protected void setRelationsField(Object newResource, RegistryEntry registryEntry, Map.Entry<String, Relationship> property, QueryAdapter queryAdapter, RepositoryMethodParameterProvider parameterProvider) {
+	protected void setRelationsField(Object newResource, RegistryEntry registryEntry, Map.Entry<String, Relationship> property,
+			QueryAdapter queryAdapter, RepositoryMethodParameterProvider parameterProvider) {
 
 		Relationship relationship = property.getValue();
 
@@ -165,12 +187,22 @@ class ClientResourceUpsert extends ResourceUpsert {
 
 				JsonNode relatedNode = links.get("related");
 				if (relatedNode != null) {
-					String url = relatedNode.asText().trim();
+					String url = null;
+					if (relatedNode.has(SerializerUtil.HREF)) {
+						JsonNode hrefNode = relatedNode.get(SerializerUtil.HREF);
+						if (hrefNode != null) {
+							url = hrefNode.asText().trim();
+						}
+					}
+					else {
+						url = relatedNode.asText().trim();
+					}
 					Object proxy = proxyFactory.createCollectionProxy(elementType, collectionClass, url);
 					field.getAccessor().setValue(newResource, proxy);
 				}
 			}
-		} else {
+		}
+		else {
 			// set elements
 			super.setRelationsField(newResource, registryEntry, property, queryAdapter, parameterProvider);
 		}
@@ -178,7 +210,7 @@ class ClientResourceUpsert extends ResourceUpsert {
 
 	@Override
 	protected boolean canModifyField(ResourceInformation resourceInformation, String fieldName, ResourceField field) {
-		// nothing to verify during deserialization on client-side
+		// nothing to validate during deserialization on client-side
 		// there is only a need to check field access when receiving resources
 		// on the server-side client needs all the data he gets from the server
 		return true;
